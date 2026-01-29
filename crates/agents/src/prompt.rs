@@ -1,7 +1,12 @@
 use crate::tool_registry::ToolRegistry;
 
 /// Build the system prompt for an agent run, including available tools.
-pub fn build_system_prompt(tools: &ToolRegistry) -> String {
+///
+/// When `native_tools` is true, tool schemas are sent via the API's native
+/// tool-calling mechanism (e.g. OpenAI function calling, Anthropic tool_use).
+/// When false, tools are described in the prompt itself and the LLM is
+/// instructed to emit tool calls as JSON blocks that the runner can parse.
+pub fn build_system_prompt(tools: &ToolRegistry, native_tools: bool) -> String {
     let tool_schemas = tools.list_schemas();
 
     let mut prompt = String::from(
@@ -13,9 +18,22 @@ pub fn build_system_prompt(tools: &ToolRegistry) -> String {
         for schema in &tool_schemas {
             let name = schema["name"].as_str().unwrap_or("unknown");
             let desc = schema["description"].as_str().unwrap_or("");
-            prompt.push_str(&format!("- **{name}**: {desc}\n"));
+            let params = &schema["parameters"];
+            prompt.push_str(&format!("### {name}\n{desc}\n\nParameters:\n```json\n{}\n```\n\n",
+                serde_json::to_string_pretty(params).unwrap_or_default()));
         }
-        prompt.push('\n');
+    }
+
+    if !native_tools && !tool_schemas.is_empty() {
+        prompt.push_str(concat!(
+            "## How to call tools\n\n",
+            "To call a tool, output ONLY a JSON block with this exact format (no other text before it):\n\n",
+            "```tool_call\n",
+            "{\"tool\": \"<tool_name>\", \"arguments\": {<arguments>}}\n",
+            "```\n\n",
+            "You MUST output the tool call block as the ENTIRE response — do not add any text before or after it.\n",
+            "After the tool executes, you will receive the result and can then respond to the user.\n\n",
+        ));
     }
 
     prompt.push_str(concat!(
@@ -29,4 +47,39 @@ pub fn build_system_prompt(tools: &ToolRegistry) -> String {
     ));
 
     prompt
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_native_prompt_does_not_include_tool_call_format() {
+        let tools = ToolRegistry::new();
+        let prompt = build_system_prompt(&tools, true);
+        assert!(!prompt.contains("```tool_call"));
+    }
+
+    #[test]
+    fn test_fallback_prompt_includes_tool_call_format() {
+        let mut tools = ToolRegistry::new();
+        // Register a dummy tool via a helper struct.
+        struct Dummy;
+        #[async_trait::async_trait]
+        impl crate::tool_registry::AgentTool for Dummy {
+            fn name(&self) -> &str { "test" }
+            fn description(&self) -> &str { "A test tool" }
+            fn parameters_schema(&self) -> serde_json::Value {
+                serde_json::json!({"type": "object", "properties": {}})
+            }
+            async fn execute(&self, _: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+                Ok(serde_json::json!({}))
+            }
+        }
+        tools.register(Box::new(Dummy));
+
+        let prompt = build_system_prompt(&tools, false);
+        assert!(prompt.contains("```tool_call"));
+        assert!(prompt.contains("### test"));
+    }
 }

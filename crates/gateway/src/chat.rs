@@ -182,7 +182,8 @@ async fn run_with_tools(
     tool_registry: &Arc<ToolRegistry>,
     text: &str,
 ) {
-    let system_prompt = build_system_prompt(tool_registry);
+    let native_tools = provider.supports_tools();
+    let system_prompt = build_system_prompt(tool_registry, native_tools);
 
     // Broadcast tool events to the UI as they happen.
     let state_for_events = Arc::clone(state);
