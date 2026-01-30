@@ -2,6 +2,8 @@ use std::pin::Pin;
 
 use {async_trait::async_trait, futures::StreamExt, tokio_stream::Stream};
 
+use tracing::{debug, trace, warn};
+
 use crate::model::{CompletionResponse, LlmProvider, StreamEvent, ToolCall, Usage};
 
 pub struct AnthropicProvider {
@@ -62,6 +64,10 @@ impl LlmProvider for AnthropicProvider {
 
     fn id(&self) -> &str {
         &self.model
+    }
+
+    fn supports_tools(&self) -> bool {
+        true
     }
 
     async fn complete(
@@ -139,7 +145,16 @@ impl LlmProvider for AnthropicProvider {
             body["tools"] = serde_json::Value::Array(to_anthropic_tools(tools));
         }
 
-        let resp = self
+        debug!(
+            model = %self.model,
+            messages_count = anthropic_messages.len(),
+            tools_count = tools.len(),
+            has_system = system_text.is_some(),
+            "anthropic complete request"
+        );
+        trace!(body = %serde_json::to_string(&body).unwrap_or_default(), "anthropic request body");
+
+        let http_resp = self
             .client
             .post(format!("{}/v1/messages", self.base_url))
             .header("x-api-key", &self.api_key)
@@ -147,10 +162,17 @@ impl LlmProvider for AnthropicProvider {
             .header("content-type", "application/json")
             .json(&body)
             .send()
-            .await?
-            .error_for_status()?
-            .json::<serde_json::Value>()
             .await?;
+
+        let status = http_resp.status();
+        if !status.is_success() {
+            let body_text = http_resp.text().await.unwrap_or_default();
+            warn!(status = %status, body = %body_text, "anthropic API error");
+            anyhow::bail!("Anthropic API error HTTP {status}: {body_text}");
+        }
+
+        let resp = http_resp.json::<serde_json::Value>().await?;
+        trace!(response = %resp, "anthropic raw response");
 
         let content = resp["content"].as_array().cloned().unwrap_or_default();
 

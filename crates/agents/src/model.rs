@@ -24,6 +24,13 @@ pub trait LlmProvider: Send + Sync {
         tools: &[serde_json::Value],
     ) -> anyhow::Result<CompletionResponse>;
 
+    /// Whether this provider supports tool/function calling.
+    /// Defaults to false; providers that handle the `tools` parameter
+    /// in `complete()` should override this to return true.
+    fn supports_tools(&self) -> bool {
+        false
+    }
+
     /// Stream a completion, yielding delta/done/error events.
     fn stream(
         &self,
