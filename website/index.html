@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>moltis — Personal AI Gateway</title>
+<meta name="description" content="Moltis is a Rust-powered personal AI gateway that connects LLMs to your messaging channels, tools, and devices.">
+<style>
+:root {
+  --bg: #0a0a0f;
+  --surface: #12121a;
+  --surface2: #1a1a26;
+  --border: #2a2a3a;
+  --text: #e0e0ec;
+  --text-strong: #ffffff;
+  --muted: #7a7a92;
+  --accent: #7c6ef0;
+  --accent-dim: #5b52c4;
+  --accent-subtle: rgba(124,110,240,0.15);
+  --green: #34d399;
+  --yellow: #fbbf24;
+  --red: #f87171;
+  --font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  font-family: var(--font-body);
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.container { max-width: 960px; margin: 0 auto; padding: 0 24px; }
+
+/* Nav */
+nav {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  background: rgba(10,10,15,0.85);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border);
+  padding: 14px 0;
+}
+nav .container { display: flex; align-items: center; gap: 32px; }
+nav .logo { font-size: 18px; font-weight: 700; color: var(--text-strong); letter-spacing: 0.5px; }
+nav .links { display: flex; gap: 24px; margin-left: auto; }
+nav .links a { color: var(--muted); font-size: 14px; font-weight: 500; }
+nav .links a:hover { color: var(--text); text-decoration: none; }
+
+/* Hero */
+.hero {
+  padding: 100px 0 80px;
+  text-align: center;
+}
+.hero h1 {
+  font-size: 48px;
+  font-weight: 800;
+  color: var(--text-strong);
+  margin-bottom: 16px;
+  letter-spacing: -0.5px;
+}
+.hero h1 span { color: var(--accent); }
+.hero p {
+  font-size: 18px;
+  color: var(--muted);
+  max-width: 560px;
+  margin: 0 auto 32px;
+}
+.hero-badges { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 13px;
+  padding: 6px 14px;
+  border-radius: 20px;
+  font-weight: 500;
+}
+.badge .dot { width: 6px; height: 6px; border-radius: 50%; }
+.badge .dot.green { background: var(--green); }
+.badge .dot.yellow { background: var(--yellow); }
+
+/* Sections */
+section { padding: 64px 0; }
+section h2 {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--text-strong);
+  margin-bottom: 12px;
+}
+section .subtitle {
+  color: var(--muted);
+  font-size: 15px;
+  margin-bottom: 40px;
+}
+
+/* Feature grid */
+.features {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+}
+.feature-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 24px;
+  transition: border-color 0.2s;
+}
+.feature-card:hover { border-color: var(--accent-dim); }
+.feature-card h3 {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-strong);
+  margin-bottom: 8px;
+}
+.feature-card p { font-size: 14px; color: var(--muted); line-height: 1.5; }
+.feature-card .tag {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  margin-bottom: 12px;
+}
+.tag-done { background: rgba(52,211,153,0.15); color: var(--green); }
+.tag-partial { background: rgba(251,191,36,0.15); color: var(--yellow); }
+.tag-planned { background: rgba(248,113,113,0.12); color: var(--red); }
+
+/* Providers */
+.provider-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+}
+.provider {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-strong);
+}
+.provider .model { font-size: 12px; color: var(--muted); margin-top: 4px; font-family: var(--font-mono); }
+
+/* Roadmap */
+.roadmap-section { border-top: 1px solid var(--border); }
+.roadmap-group { margin-bottom: 48px; }
+.roadmap-group h3 {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-strong);
+  margin-bottom: 16px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.roadmap-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+.roadmap-table th {
+  text-align: left;
+  padding: 8px 12px;
+  color: var(--muted);
+  font-weight: 500;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-bottom: 1px solid var(--border);
+}
+.roadmap-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(42,42,58,0.5);
+}
+.roadmap-table tr:hover td { background: rgba(26,26,38,0.5); }
+.status-pill {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+.status-done { background: rgba(52,211,153,0.15); color: var(--green); }
+.status-partial { background: rgba(251,191,36,0.15); color: var(--yellow); }
+.status-planned { background: rgba(248,113,113,0.12); color: var(--red); }
+
+/* Architecture */
+.arch-code {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 24px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--muted);
+  overflow-x: auto;
+  white-space: pre;
+}
+.arch-code .hl { color: var(--accent); }
+.arch-code .grn { color: var(--green); }
+
+/* Footer */
+footer {
+  border-top: 1px solid var(--border);
+  padding: 32px 0;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* Responsive */
+@media (max-width: 640px) {
+  .hero h1 { font-size: 32px; }
+  .hero p { font-size: 16px; }
+  .features { grid-template-columns: 1fr; }
+  nav .links { gap: 16px; }
+}
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="container">
+    <div class="logo">moltis</div>
+    <div class="links">
+      <a href="#features">Features</a>
+      <a href="#providers">Providers</a>
+      <a href="#architecture">Architecture</a>
+      <a href="#roadmap">Roadmap</a>
+      <a href="https://github.com/nichochar/moltis">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<section class="hero">
+  <div class="container">
+    <h1>Your personal <span>AI gateway</span></h1>
+    <p>Moltis connects LLMs to your messaging channels, tools, and devices. Written in Rust for speed, safety, and reliability.</p>
+    <div class="hero-badges">
+      <span class="badge"><span class="dot green"></span>Rust 2024 Edition</span>
+      <span class="badge"><span class="dot green"></span>Multi-Provider LLM</span>
+      <span class="badge"><span class="dot green"></span>WebSocket Protocol v3</span>
+      <span class="badge"><span class="dot yellow"></span>Active Development</span>
+    </div>
+  </div>
+</section>
+
+<section id="features">
+  <div class="container">
+    <h2>Features</h2>
+    <p class="subtitle">A modular, trait-based architecture across 18 specialized crates.</p>
+    <div class="features">
+
+      <div class="feature-card">
+        <span class="tag tag-done">Done</span>
+        <h3>Gateway Server</h3>
+        <p>WebSocket and HTTP server with JSON-RPC protocol, connection handshake, authentication, and embedded web UI with dark/light theme.</p>
+      </div>
+
+      <div class="feature-card">
+        <span class="tag tag-done">Done</span>
+        <h3>Agent Runtime</h3>
+        <p>Agent loop with streaming completions, tool calling (up to 25 iterations), system prompts, auth profiles, and multi-agent routing.</p>
+      </div>
+
+      <div class="feature-card">
+        <span class="tag tag-done">Done</span>
+        <h3>Tool Execution</h3>
+        <p>Shell command execution with timeout control, output limits, multi-layer security policies, allowlists, and approval workflows.</p>
+      </div>
+
+      <div class="feature-card">
+        <span class="tag tag-done">Done</span>
+        <h3>OAuth &amp; Auth</h3>
+        <p>PKCE-based OAuth flow, device pairing with PKI, token storage with refresh, role-based access control with scoped permissions.</p>
+      </div>
+
+      <div class="feature-card">
+        <span class="tag tag-done">Done</span>
+        <h3>Session Management</h3>
+        <p>JSONL-based sessions with file locking, routing by peer/guild/team/account/channel, compaction, and history retrieval.</p>
+      </div>
+
+      <div class="feature-card">
+        <span class="tag tag-done">Done</span>
+        <h3>Configuration</h3>
+        <p>Multi-format config (TOML, YAML, JSON), environment variable substitution, provider enable/disable, get/set via gateway API.</p>
+      </div>
+
+      <div class="feature-card">
+        <span class="tag tag-done">Done</span>
+        <h3>CLI</h3>
+        <p>Full command suite: gateway, agent, channels, send, sessions, config, models, auth, onboard wizard, and doctor diagnostics.</p>
+      </div>
+
+      <div class="feature-card">
+        <span class="tag tag-done">Done</span>
+        <h3>Cron Scheduling</h3>
+        <p>Cron expression parsing, persistent job storage, isolated agent execution, and execution history tracking.</p>
+      </div>
+
+      <div class="feature-card">
+        <span class="tag tag-partial">Partial</span>
+        <h3>Plugin System</h3>
+        <p>Comprehensive plugin API for tools, channels, hooks, providers, commands, and routes. Disk loading in progress.</p>
+      </div>
+
+      <div class="feature-card">
+        <span class="tag tag-partial">Partial</span>
+        <h3>Memory / RAG</h3>
+        <p>Vector storage with SQLite + sqlite-vec, hybrid keyword and semantic search. Full backend completion underway.</p>
+      </div>
+
+      <div class="feature-card">
+        <span class="tag tag-partial">Partial</span>
+        <h3>Browser Automation</h3>
+        <p>Chrome DevTools Protocol integration with profile isolation, screenshots, snapshots. CDP pool manager in progress.</p>
+      </div>
+
+      <div class="feature-card">
+        <span class="tag tag-partial">Partial</span>
+        <h3>Media Pipeline</h3>
+        <p>Download, storage, MIME detection, image resize, HTTP serving, TTL-based cleanup. Audio transcription coming soon.</p>
+      </div>
+
+      <div class="feature-card">
+        <span class="tag tag-planned">Planned</span>
+        <h3>Messaging Channels</h3>
+        <p>Telegram, Discord, Slack, WhatsApp, SMS, Email, Signal. Plugin architecture is ready, channel implementations next.</p>
+      </div>
+
+      <div class="feature-card">
+        <span class="tag tag-planned">Planned</span>
+        <h3>Web Tools</h3>
+        <p>Web fetch and web search tools for agents. Enables LLMs to browse and retrieve information from the web.</p>
+      </div>
+
+      <div class="feature-card">
+        <span class="tag tag-planned">Planned</span>
+        <h3>Image Generation</h3>
+        <p>AI image generation tool integration for agents to create images on demand.</p>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<section id="providers">
+  <div class="container">
+    <h2>LLM Providers</h2>
+    <p class="subtitle">Connect to any major LLM provider. Switch models on the fly.</p>
+    <div class="provider-grid">
+      <div class="provider">Anthropic Claude<div class="model">claude-sonnet-4-20250514</div></div>
+      <div class="provider">OpenAI<div class="model">gpt-4o</div></div>
+      <div class="provider">OpenAI Codex<div class="model">gpt-5.2 (OAuth)</div></div>
+      <div class="provider">Google Gemini<div class="model">gemini-2.0-flash</div></div>
+      <div class="provider">Groq<div class="model">llama-3.1-8b-instant</div></div>
+      <div class="provider">xAI<div class="model">grok-3-mini</div></div>
+      <div class="provider">DeepSeek<div class="model">deepseek-chat</div></div>
+    </div>
+  </div>
+</section>
+
+<section id="architecture">
+  <div class="container">
+    <h2>Architecture</h2>
+    <p class="subtitle">18-crate Cargo workspace with clean separation of concerns.</p>
+    <div class="arch-code"><span class="hl">moltis/</span>
+├── crates/
+│   ├── <span class="grn">gateway</span>        WebSocket/HTTP server, web UI, pairing
+│   ├── <span class="grn">agents</span>         Agent runtime, LLM providers, streaming
+│   ├── <span class="grn">tools</span>          Tool registry, exec, sandbox, security
+│   ├── <span class="grn">channels</span>       Channel plugin trait, message routing
+│   ├── <span class="grn">sessions</span>       JSONL storage, file locking, compaction
+│   ├── <span class="grn">config</span>         Multi-format config, env substitution
+│   ├── <span class="grn">protocol</span>       v3 frame types, error codes, scopes
+│   ├── <span class="grn">routing</span>        Binding cascade, agent resolution
+│   ├── <span class="grn">auto-reply</span>     Message pipeline, directives
+│   ├── <span class="grn">memory</span>         Vector DB, hybrid search, embeddings
+│   ├── <span class="grn">media</span>          Download, MIME, resize, transcribe
+│   ├── <span class="grn">browser</span>        CDP, screenshots, page interaction
+│   ├── <span class="grn">canvas</span>         Agent-controlled HTML UI for nodes
+│   ├── <span class="grn">cron</span>           Scheduled agent runs
+│   ├── <span class="grn">oauth</span>          PKCE flow, token storage
+│   ├── <span class="grn">plugins</span>        Discovery, loading, plugin API
+│   ├── <span class="grn">cli</span>            Commands, onboarding wizard
+│   └── <span class="grn">common</span>         Shared types and errors
+└── <span class="hl">website/</span>       This website</div>
+  </div>
+</section>
+
+<section id="roadmap" class="roadmap-section">
+  <div class="container">
+    <h2>Roadmap</h2>
+    <p class="subtitle">Tracking progress toward full feature parity with moltbot and beyond.</p>
+
+    <div class="roadmap-group">
+      <h3>Near-Term Priorities</h3>
+      <table class="roadmap-table">
+        <thead><tr><th>Feature</th><th>Status</th><th>Details</th></tr></thead>
+        <tbody>
+          <tr><td>Telegram channel</td><td><span class="status-pill status-planned">Planned</span></td><td>First channel implementation target</td></tr>
+          <tr><td>Discord channel</td><td><span class="status-pill status-planned">Planned</span></td><td>Second channel target</td></tr>
+          <tr><td>Browser CDP pool</td><td><span class="status-pill status-partial">Partial</span></td><td>Complete pool manager for headless Chrome</td></tr>
+          <tr><td>Web fetch tool</td><td><span class="status-pill status-planned">Planned</span></td><td>HTTP fetch for agent use</td></tr>
+          <tr><td>Web search tool</td><td><span class="status-pill status-planned">Planned</span></td><td>Search engine integration</td></tr>
+          <tr><td>Memory backend</td><td><span class="status-pill status-partial">Partial</span></td><td>Complete RAG with embedding providers</td></tr>
+          <tr><td>Plugin loading</td><td><span class="status-pill status-partial">Partial</span></td><td>Load plugins from disk paths</td></tr>
+          <tr><td>Image generation</td><td><span class="status-pill status-planned">Planned</span></td><td>AI image generation tool</td></tr>
+          <tr><td>Directive parsing</td><td><span class="status-pill status-planned">Planned</span></td><td>#think, #exec, #reset directives</td></tr>
+          <tr><td>Docker sandbox runtime</td><td><span class="status-pill status-partial">Partial</span></td><td>Schema ready, runtime pending</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="roadmap-group">
+      <h3>More Channels</h3>
+      <table class="roadmap-table">
+        <thead><tr><th>Channel</th><th>Status</th></tr></thead>
+        <tbody>
+          <tr><td>Slack</td><td><span class="status-pill status-planned">Planned</span></td></tr>
+          <tr><td>WhatsApp</td><td><span class="status-pill status-planned">Planned</span></td></tr>
+          <tr><td>SMS</td><td><span class="status-pill status-planned">Planned</span></td></tr>
+          <tr><td>Email</td><td><span class="status-pill status-planned">Planned</span></td></tr>
+          <tr><td>Signal</td><td><span class="status-pill status-planned">Planned</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="roadmap-group">
+      <h3>Voice &amp; Media</h3>
+      <table class="roadmap-table">
+        <thead><tr><th>Feature</th><th>Status</th><th>Details</th></tr></thead>
+        <tbody>
+          <tr><td>TTS provider framework</td><td><span class="status-pill status-planned">Planned</span></td><td>Protocol methods defined</td></tr>
+          <tr><td>Voice wake word</td><td><span class="status-pill status-planned">Planned</span></td><td>Protocol methods defined</td></tr>
+          <tr><td>Audio transcription</td><td><span class="status-pill status-planned">Planned</span></td><td>Speech-to-text for media pipeline</td></tr>
+          <tr><td>MIME sniffing</td><td><span class="status-pill status-partial">Partial</span></td><td>Needs header + content fallback</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="roadmap-group">
+      <h3>Long-Term Goals</h3>
+      <table class="roadmap-table">
+        <thead><tr><th>Goal</th><th>Details</th></tr></thead>
+        <tbody>
+          <tr><td>Full moltbot feature parity</td><td>All channels, tools, and capabilities from the original</td></tr>
+          <tr><td>Native mobile node SDK</td><td>iOS and Android SDKs for device integration</td></tr>
+          <tr><td>Plugin marketplace</td><td>Community plugin discovery and distribution</td></tr>
+          <tr><td>Multi-user support</td><td>Teams, shared agents, permissions</td></tr>
+          <tr><td>End-to-end encryption</td><td>Encrypted session storage and transport</td></tr>
+          <tr><td>Usage analytics dashboard</td><td>Cost tracking, model comparison, usage insights</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+  </div>
+</section>
+
+<footer>
+  <div class="container">
+    moltis &mdash; built with Rust
+  </div>
+</footer>
+
+</body>
+</html>
