@@ -2820,20 +2820,299 @@
   var channelModalBody = $("channelModalBody");
   var channelModalClose = $("channelModalClose");
 
-  function openChannelModal() {
+  function makeTelegramIcon() {
+    var ns = "http://www.w3.org/2000/svg";
+    var svg = document.createElementNS(ns, "svg");
+    svg.setAttribute("width", "16");
+    svg.setAttribute("height", "16");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-width", "1.5");
+    var path = document.createElementNS(ns, "path");
+    path.setAttribute("d", "M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z");
+    svg.appendChild(path);
+    return svg;
+  }
+
+  function openChannelModal(onAdded) {
     channelModal.classList.remove("hidden");
-    channelModalTitle.textContent = "Add Channel";
+    channelModalTitle.textContent = "Add Telegram Bot";
     channelModalBody.textContent = "";
-    var msg = createEl("div", {
-      className: "text-sm text-[var(--muted)]",
-      style: "padding:12px 0;",
-      textContent: "Channel creation is not yet available. Channels are configured externally."
+
+    var form = createEl("div", { style: "display:flex;flex-direction:column;gap:12px;padding:8px 0;" });
+
+    // Instructions
+    var helpBox = createEl("div", {
+      style: "background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;display:flex;flex-direction:column;gap:6px;"
     });
-    channelModalBody.appendChild(msg);
+    var helpTitle = createEl("span", {
+      className: "text-xs font-medium text-[var(--text-strong)]",
+      textContent: "How to create a Telegram bot"
+    });
+    helpBox.appendChild(helpTitle);
+
+    var step1 = createEl("div", { className: "text-xs text-[var(--muted)]", style: "display:flex;gap:4px;" });
+    step1.appendChild(document.createTextNode("1. Open "));
+    var bfLink = createEl("a", {
+      href: "https://t.me/BotFather",
+      target: "_blank",
+      className: "text-[var(--accent)]",
+      style: "text-decoration:underline;",
+      textContent: "@BotFather"
+    });
+    step1.appendChild(bfLink);
+    step1.appendChild(document.createTextNode(" in Telegram"));
+    helpBox.appendChild(step1);
+
+    helpBox.appendChild(createEl("div", {
+      className: "text-xs text-[var(--muted)]",
+      textContent: "2. Send /newbot and follow the prompts to choose a name and username"
+    }));
+    helpBox.appendChild(createEl("div", {
+      className: "text-xs text-[var(--muted)]",
+      textContent: "3. Copy the bot token (looks like 123456:ABC-DEF...) and paste it below"
+    }));
+
+    var helpTip = createEl("div", { className: "text-xs text-[var(--muted)]", style: "display:flex;gap:4px;margin-top:2px;" });
+    helpTip.appendChild(document.createTextNode("See the "));
+    var docsLink = createEl("a", {
+      href: "https://core.telegram.org/bots/tutorial",
+      target: "_blank",
+      className: "text-[var(--accent)]",
+      style: "text-decoration:underline;",
+      textContent: "Telegram Bot Tutorial"
+    });
+    helpTip.appendChild(docsLink);
+    helpTip.appendChild(document.createTextNode(" for more details."));
+    helpBox.appendChild(helpTip);
+
+    form.appendChild(helpBox);
+
+    // Bot username
+    var idLabel = createEl("label", { className: "text-xs text-[var(--muted)]", textContent: "Bot username" });
+    var idInput = createEl("input", {
+      type: "text",
+      placeholder: "e.g. my_assistant_bot",
+      className: "text-sm bg-[var(--surface2)] border border-[var(--border)] rounded px-3 py-2 text-[var(--text)] focus:outline-none focus:border-[var(--border-strong)]",
+      style: "font-family:var(--font-body);"
+    });
+
+    // Bot Token
+    var tokenLabel = createEl("label", { className: "text-xs text-[var(--muted)]", textContent: "Bot Token (from @BotFather)" });
+    var tokenInput = createEl("input", {
+      type: "password",
+      placeholder: "123456:ABC-DEF...",
+      className: "text-sm bg-[var(--surface2)] border border-[var(--border)] rounded px-3 py-2 text-[var(--text)] focus:outline-none focus:border-[var(--border-strong)]",
+      style: "font-family:var(--font-body);"
+    });
+
+    // DM Policy
+    var dmLabel = createEl("label", { className: "text-xs text-[var(--muted)]", textContent: "DM Policy" });
+    var dmSelect = createEl("select", {
+      className: "text-sm bg-[var(--surface2)] border border-[var(--border)] rounded px-3 py-2 text-[var(--text)] cursor-pointer",
+      style: "font-family:var(--font-body);"
+    });
+    [["open", "Open (anyone)"], ["allowlist", "Allowlist only"], ["disabled", "Disabled"]].forEach(function (opt) {
+      var o = createEl("option", { value: opt[0], textContent: opt[1] });
+      dmSelect.appendChild(o);
+    });
+
+    // Mention Mode
+    var mentionLabel = createEl("label", { className: "text-xs text-[var(--muted)]", textContent: "Group Mention Mode" });
+    var mentionSelect = createEl("select", {
+      className: "text-sm bg-[var(--surface2)] border border-[var(--border)] rounded px-3 py-2 text-[var(--text)] cursor-pointer",
+      style: "font-family:var(--font-body);"
+    });
+    [["mention", "Must @mention bot"], ["always", "Always respond"], ["none", "Don't respond in groups"]].forEach(function (opt) {
+      var o = createEl("option", { value: opt[0], textContent: opt[1] });
+      mentionSelect.appendChild(o);
+    });
+
+    // Allowlist
+    var allowLabel = createEl("label", { className: "text-xs text-[var(--muted)]", textContent: "DM Allowlist (one username per line)" });
+    var allowInput = createEl("textarea", {
+      placeholder: "user1\nuser2",
+      rows: 3,
+      className: "text-sm bg-[var(--surface2)] border border-[var(--border)] rounded px-3 py-2 text-[var(--text)] focus:outline-none focus:border-[var(--border-strong)]",
+      style: "font-family:var(--font-body);resize:vertical;"
+    });
+
+    // Error display
+    var errorEl = createEl("div", {
+      className: "text-xs text-[var(--error)]",
+      style: "display:none;padding:4px 0;"
+    });
+
+    // Submit button
+    var submitBtn = createEl("button", {
+      className: "bg-[var(--accent-dim)] text-white border-none px-4 py-2 rounded text-sm cursor-pointer hover:bg-[var(--accent)] transition-colors",
+      textContent: "Connect Bot"
+    });
+
+    submitBtn.addEventListener("click", function () {
+      var accountId = idInput.value.trim();
+      var token = tokenInput.value.trim();
+
+      if (!accountId) {
+        errorEl.textContent = "Bot username is required.";
+        errorEl.style.display = "block";
+        return;
+      }
+      if (!token) {
+        errorEl.textContent = "Bot token is required.";
+        errorEl.style.display = "block";
+        return;
+      }
+
+      var allowlist = allowInput.value.trim().split(/\n/).map(function(s){ return s.trim(); }).filter(Boolean);
+
+      errorEl.style.display = "none";
+      submitBtn.disabled = true;
+      submitBtn.textContent = "Connecting...";
+
+      sendRpc("channels.add", {
+        type: "telegram",
+        account_id: accountId,
+        config: {
+          token: token,
+          dm_policy: dmSelect.value,
+          mention_mode: mentionSelect.value,
+          allowlist: allowlist
+        }
+      }).then(function (res) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = "Connect Bot";
+        if (res && res.ok) {
+          closeChannelModal();
+          if (onAdded) onAdded();
+        } else {
+          var msg = (res && res.error && (res.error.message || res.error.detail)) || "Failed to connect bot.";
+          errorEl.textContent = msg;
+          errorEl.style.display = "block";
+        }
+      });
+    });
+
+    form.appendChild(idLabel);
+    form.appendChild(idInput);
+    form.appendChild(tokenLabel);
+    form.appendChild(tokenInput);
+    form.appendChild(dmLabel);
+    form.appendChild(dmSelect);
+    form.appendChild(mentionLabel);
+    form.appendChild(mentionSelect);
+    form.appendChild(allowLabel);
+    form.appendChild(allowInput);
+    form.appendChild(errorEl);
+    form.appendChild(submitBtn);
+
+    channelModalBody.appendChild(form);
+    idInput.focus();
   }
 
   function closeChannelModal() {
     channelModal.classList.add("hidden");
+  }
+
+  function openEditChannelModal(ch, onUpdated) {
+    channelModal.classList.remove("hidden");
+    channelModalTitle.textContent = "Edit Telegram Bot";
+    channelModalBody.textContent = "";
+
+    var cfg = ch.config || {};
+    var form = createEl("div", { style: "display:flex;flex-direction:column;gap:12px;padding:8px 0;" });
+
+    var nameEl = createEl("div", {
+      className: "text-sm text-[var(--text-strong)]",
+      textContent: ch.name || ch.account_id
+    });
+    form.appendChild(nameEl);
+
+    // DM Policy
+    var dmLabel = createEl("label", { className: "text-xs text-[var(--muted)]", textContent: "DM Policy" });
+    var dmSelect = createEl("select", {
+      className: "text-sm bg-[var(--surface2)] border border-[var(--border)] rounded px-3 py-2 text-[var(--text)] cursor-pointer",
+      style: "font-family:var(--font-body);"
+    });
+    [["open", "Open (anyone)"], ["allowlist", "Allowlist only"], ["disabled", "Disabled"]].forEach(function (opt) {
+      var o = createEl("option", { value: opt[0], textContent: opt[1] });
+      if (opt[0] === cfg.dm_policy) o.selected = true;
+      dmSelect.appendChild(o);
+    });
+
+    // Mention Mode
+    var mentionLabel = createEl("label", { className: "text-xs text-[var(--muted)]", textContent: "Group Mention Mode" });
+    var mentionSelect = createEl("select", {
+      className: "text-sm bg-[var(--surface2)] border border-[var(--border)] rounded px-3 py-2 text-[var(--text)] cursor-pointer",
+      style: "font-family:var(--font-body);"
+    });
+    [["mention", "Must @mention bot"], ["always", "Always respond"], ["none", "Don't respond in groups"]].forEach(function (opt) {
+      var o = createEl("option", { value: opt[0], textContent: opt[1] });
+      if (opt[0] === cfg.mention_mode) o.selected = true;
+      mentionSelect.appendChild(o);
+    });
+
+    // Allowlist
+    var allowLabel = createEl("label", { className: "text-xs text-[var(--muted)]", textContent: "DM Allowlist (one username per line)" });
+    var allowInput = createEl("textarea", {
+      rows: 3,
+      className: "text-sm bg-[var(--surface2)] border border-[var(--border)] rounded px-3 py-2 text-[var(--text)] focus:outline-none focus:border-[var(--border-strong)]",
+      style: "font-family:var(--font-body);resize:vertical;"
+    });
+    allowInput.value = (cfg.allowlist || []).join("\n");
+
+    // Error display
+    var errorEl = createEl("div", {
+      className: "text-xs text-[var(--error)]",
+      style: "display:none;padding:4px 0;"
+    });
+
+    // Save button
+    var saveBtn = createEl("button", {
+      className: "bg-[var(--accent-dim)] text-white border-none px-4 py-2 rounded text-sm cursor-pointer hover:bg-[var(--accent)] transition-colors",
+      textContent: "Save Changes"
+    });
+
+    saveBtn.addEventListener("click", function () {
+      var allowlist = allowInput.value.trim().split(/\n/).map(function(s){ return s.trim(); }).filter(Boolean);
+
+      errorEl.style.display = "none";
+      saveBtn.disabled = true;
+      saveBtn.textContent = "Saving...";
+
+      sendRpc("channels.update", {
+        account_id: ch.account_id,
+        config: {
+          token: cfg.token || "",
+          dm_policy: dmSelect.value,
+          mention_mode: mentionSelect.value,
+          allowlist: allowlist
+        }
+      }).then(function (res) {
+        saveBtn.disabled = false;
+        saveBtn.textContent = "Save Changes";
+        if (res && res.ok) {
+          closeChannelModal();
+          if (onUpdated) onUpdated();
+        } else {
+          var msg = (res && res.error && (res.error.message || res.error.detail)) || "Failed to update bot.";
+          errorEl.textContent = msg;
+          errorEl.style.display = "block";
+        }
+      });
+    });
+
+    form.appendChild(dmLabel);
+    form.appendChild(dmSelect);
+    form.appendChild(mentionLabel);
+    form.appendChild(mentionSelect);
+    form.appendChild(allowLabel);
+    form.appendChild(allowInput);
+    form.appendChild(errorEl);
+    form.appendChild(saveBtn);
+
+    channelModalBody.appendChild(form);
   }
 
   channelModalClose.addEventListener("click", closeChannelModal);
@@ -2846,7 +3125,7 @@
     '<div class="flex-1 flex flex-col min-w-0 p-4 gap-4 overflow-y-auto">' +
       '<div class="flex items-center gap-3">' +
         '<h2 class="text-lg font-medium text-[var(--text-strong)]">Channels</h2>' +
-        '<button id="chanAddBtn" class="bg-[var(--accent-dim)] text-white border-none px-3 py-1.5 rounded text-xs cursor-pointer hover:bg-[var(--accent)] transition-colors">+ Add Channel</button>' +
+        '<button id="chanAddBtn" class="bg-[var(--accent-dim)] text-white border-none px-3 py-1.5 rounded text-xs cursor-pointer hover:bg-[var(--accent)] transition-colors">+ Add Telegram Bot</button>' +
       '</div>' +
       '<div id="channelPageList"></div>' +
     '</div>';
@@ -2860,7 +3139,7 @@
     var listEl = $("channelPageList");
 
     addBtn.addEventListener("click", function () {
-      if (connected) openChannelModal();
+      if (connected) openChannelModal(renderChannelList);
     });
 
     function renderChannelList() {
@@ -2870,43 +3149,87 @@
         while (listEl.firstChild) listEl.removeChild(listEl.firstChild);
 
         if (channels.length === 0) {
-          listEl.appendChild(createEl("div", {
+          var empty = createEl("div", {
+            style: "text-align:center;padding:40px 0;"
+          });
+          empty.appendChild(createEl("div", {
             className: "text-sm text-[var(--muted)]",
-            textContent: "No channels connected."
+            style: "margin-bottom:12px;",
+            textContent: "No Telegram bots connected."
           }));
+          empty.appendChild(createEl("div", {
+            className: "text-xs text-[var(--muted)]",
+            textContent: "Click \"+ Add Telegram Bot\" to connect one using a token from @BotFather."
+          }));
+          listEl.appendChild(empty);
           return;
         }
 
         channels.forEach(function (ch) {
           var card = createEl("div", {
-            style: "display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border:1px solid var(--border);border-radius:6px;margin-bottom:6px;"
+            style: "display:flex;align-items:center;justify-content:space-between;padding:12px 14px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;"
           });
 
-          var left = createEl("div", { style: "display:flex;align-items:center;gap:8px;" });
-          left.appendChild(createEl("span", {
+          var left = createEl("div", { style: "display:flex;align-items:center;gap:10px;" });
+
+          // Telegram icon
+          var icon = createEl("span", {
+            style: "display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:6px;background:var(--surface2);"
+          });
+          icon.appendChild(makeTelegramIcon());
+          left.appendChild(icon);
+
+          var info = createEl("div", { style: "display:flex;flex-direction:column;gap:2px;" });
+          info.appendChild(createEl("span", {
             className: "text-sm text-[var(--text-strong)]",
-            textContent: ch.name || ch.type || "channel"
+            textContent: ch.name || ch.account_id || "Telegram"
           }));
 
+          if (ch.details) {
+            info.appendChild(createEl("span", {
+              className: "text-xs text-[var(--muted)]",
+              textContent: ch.details
+            }));
+          }
+
+          left.appendChild(info);
+
+          // Status badge
+          var statusClass = ch.status === "connected" ? "configured" : "oauth";
           var statusBadge = createEl("span", {
-            className: "provider-item-badge " + (ch.status === "connected" ? "configured" : "oauth"),
+            className: "provider-item-badge " + statusClass,
             textContent: ch.status || "unknown"
           });
           left.appendChild(statusBadge);
           card.appendChild(left);
 
-          var logoutBtn = createEl("button", {
-            className: "session-action-btn session-delete",
-            textContent: "Logout",
-            title: "Logout " + (ch.name || "channel")
+          var actions = createEl("div", { style: "display:flex;gap:6px;" });
+
+          // Edit button
+          var editBtn = createEl("button", {
+            className: "session-action-btn",
+            textContent: "Edit",
+            title: "Edit " + (ch.account_id || "channel")
           });
-          logoutBtn.addEventListener("click", function () {
-            if (!confirm("Logout from " + (ch.name || "channel") + "?")) return;
-            sendRpc("channels.logout", { channel: ch.name || ch.type }).then(function (r) {
+          editBtn.addEventListener("click", function () {
+            openEditChannelModal(ch, renderChannelList);
+          });
+          actions.appendChild(editBtn);
+
+          // Remove button
+          var removeBtn = createEl("button", {
+            className: "session-action-btn session-delete",
+            textContent: "Remove",
+            title: "Remove " + (ch.account_id || "channel")
+          });
+          removeBtn.addEventListener("click", function () {
+            if (!confirm("Remove " + (ch.name || ch.account_id) + "?")) return;
+            sendRpc("channels.remove", { account_id: ch.account_id }).then(function (r) {
               if (r && r.ok) renderChannelList();
             });
           });
-          card.appendChild(logoutBtn);
+          actions.appendChild(removeBtn);
+          card.appendChild(actions);
 
           listEl.appendChild(card);
         });

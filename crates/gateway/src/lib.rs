@@ -13,9 +13,12 @@
 pub mod approval;
 pub mod auth;
 pub mod broadcast;
+pub mod channel;
+pub mod channel_store;
 pub mod chat;
 pub mod chat_error;
 pub mod cron;
+pub mod message_log_store;
 pub mod methods;
 pub mod nodes;
 pub mod pairing;

@@ -10,6 +10,16 @@ use serde::{Deserialize, Serialize};
 pub struct MoltisConfig {
     pub providers: ProvidersConfig,
     pub tools: ToolsConfig,
+    pub channels: ChannelsConfig,
+}
+
+/// Channel configuration.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChannelsConfig {
+    /// Telegram bot accounts, keyed by account ID.
+    #[serde(default)]
+    pub telegram: HashMap<String, serde_json::Value>,
 }
 
 /// Tools configuration (exec, sandbox, policy).

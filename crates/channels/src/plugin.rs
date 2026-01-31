@@ -1,4 +1,6 @@
-use {anyhow::Result, async_trait::async_trait, moltis_common::types::ReplyPayload};
+use {
+    anyhow::Result, async_trait::async_trait, moltis_common::types::ReplyPayload, tokio::sync::mpsc,
+};
 
 /// Core channel plugin trait. Each messaging platform implements this.
 #[async_trait]
@@ -41,4 +43,28 @@ pub struct ChannelHealthSnapshot {
     pub connected: bool,
     pub account_id: String,
     pub details: Option<String>,
+}
+
+/// Stream event for edit-in-place streaming.
+#[derive(Debug, Clone)]
+pub enum StreamEvent {
+    /// A chunk of text to append.
+    Delta(String),
+    /// Stream is complete.
+    Done,
+    /// An error occurred.
+    Error(String),
+}
+
+/// Receiver end of a stream channel.
+pub type StreamReceiver = mpsc::Receiver<StreamEvent>;
+
+/// Sender end of a stream channel.
+pub type StreamSender = mpsc::Sender<StreamEvent>;
+
+/// Streaming outbound — send responses via edit-in-place updates.
+#[async_trait]
+pub trait ChannelStreamOutbound: Send + Sync {
+    /// Send a streaming response that updates a message in place.
+    async fn send_stream(&self, account_id: &str, to: &str, stream: StreamReceiver) -> Result<()>;
 }

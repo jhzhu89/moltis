@@ -97,6 +97,9 @@ pub trait ChannelService: Send + Sync {
     async fn status(&self) -> ServiceResult;
     async fn logout(&self, params: Value) -> ServiceResult;
     async fn send(&self, params: Value) -> ServiceResult;
+    async fn add(&self, params: Value) -> ServiceResult;
+    async fn remove(&self, params: Value) -> ServiceResult;
+    async fn update(&self, params: Value) -> ServiceResult;
 }
 
 pub struct NoopChannelService;
@@ -113,6 +116,18 @@ impl ChannelService for NoopChannelService {
 
     async fn send(&self, _p: Value) -> ServiceResult {
         Err("no channels configured".into())
+    }
+
+    async fn add(&self, _p: Value) -> ServiceResult {
+        Err("no channel service configured".into())
+    }
+
+    async fn remove(&self, _p: Value) -> ServiceResult {
+        Err("no channel service configured".into())
+    }
+
+    async fn update(&self, _p: Value) -> ServiceResult {
+        Err("no channel service configured".into())
     }
 }
 

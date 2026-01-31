@@ -37,6 +37,7 @@ const READ_METHODS: &[&str] = &[
     "health",
     "logs.tail",
     "channels.status",
+    "channels.list",
     "status",
     "usage.status",
     "usage.cost",
@@ -87,6 +88,9 @@ const WRITE_METHODS: &[&str] = &[
     "providers.save_key",
     "providers.remove_key",
     "providers.oauth.start",
+    "channels.add",
+    "channels.remove",
+    "channels.update",
     "sessions.switch",
     "projects.upsert",
     "projects.delete",
@@ -1099,6 +1103,59 @@ impl MethodRegistry {
                         .services
                         .channel
                         .status()
+                        .await
+                        .map_err(|e| ErrorShape::new(error_codes::UNAVAILABLE, e))
+                })
+            }),
+        );
+        // channels.list is an alias for channels.status (used by the UI)
+        self.register(
+            "channels.list",
+            Box::new(|ctx| {
+                Box::pin(async move {
+                    ctx.state
+                        .services
+                        .channel
+                        .status()
+                        .await
+                        .map_err(|e| ErrorShape::new(error_codes::UNAVAILABLE, e))
+                })
+            }),
+        );
+        self.register(
+            "channels.add",
+            Box::new(|ctx| {
+                Box::pin(async move {
+                    ctx.state
+                        .services
+                        .channel
+                        .add(ctx.params.clone())
+                        .await
+                        .map_err(|e| ErrorShape::new(error_codes::UNAVAILABLE, e))
+                })
+            }),
+        );
+        self.register(
+            "channels.remove",
+            Box::new(|ctx| {
+                Box::pin(async move {
+                    ctx.state
+                        .services
+                        .channel
+                        .remove(ctx.params.clone())
+                        .await
+                        .map_err(|e| ErrorShape::new(error_codes::UNAVAILABLE, e))
+                })
+            }),
+        );
+        self.register(
+            "channels.update",
+            Box::new(|ctx| {
+                Box::pin(async move {
+                    ctx.state
+                        .services
+                        .channel
+                        .update(ctx.params.clone())
                         .await
                         .map_err(|e| ErrorShape::new(error_codes::UNAVAILABLE, e))
                 })
