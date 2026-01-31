@@ -11,9 +11,9 @@ use {
 use {
     moltis_agents::{
         model::StreamEvent,
-        prompt::build_system_prompt,
+        prompt::build_system_prompt_with_session,
         providers::ProviderRegistry,
-        runner::{RunnerEvent, run_agent_loop},
+        runner::{RunnerEvent, run_agent_loop_with_context},
         tool_registry::ToolRegistry,
     },
     moltis_sessions::{metadata::SqliteSessionMetadata, store::SessionStore},
@@ -231,7 +231,7 @@ impl ChatService for LiveChatService {
         }
 
         // Update metadata.
-        self.session_metadata.upsert(&session_key, None).await;
+        let _ = self.session_metadata.upsert(&session_key, None).await;
         self.session_metadata
             .touch(&session_key, history.len() as u32)
             .await;
@@ -266,8 +266,28 @@ impl ChatService for LiveChatService {
         let session_store = Arc::clone(&self.session_store);
         let session_metadata = Arc::clone(&self.session_metadata);
         let session_key_clone = session_key.clone();
+        // Compute session context stats for the system prompt.
+        let session_stats = {
+            let msg_count = history.len() + 1; // +1 for the current user message
+            let mut total_input: u64 = 0;
+            let mut total_output: u64 = 0;
+            for msg in &history {
+                if let Some(t) = msg.get("inputTokens").and_then(|v| v.as_u64()) {
+                    total_input += t;
+                }
+                if let Some(t) = msg.get("outputTokens").and_then(|v| v.as_u64()) {
+                    total_output += t;
+                }
+            }
+            let total_tokens = total_input + total_output;
+            format!(
+                "Session \"{session_key}\": {msg_count} messages, {total_tokens} tokens used ({total_input} input / {total_output} output)."
+            )
+        };
+
         let handle = tokio::spawn(async move {
             let ctx_ref = project_context.as_deref();
+            let stats_ref = Some(session_stats.as_str());
             let assistant_text = if stream_only {
                 run_streaming(
                     &state,
@@ -278,6 +298,7 @@ impl ChatService for LiveChatService {
                     &history,
                     &session_key_clone,
                     ctx_ref,
+                    stats_ref,
                 )
                 .await
             } else {
@@ -291,13 +312,14 @@ impl ChatService for LiveChatService {
                     &history,
                     &session_key_clone,
                     ctx_ref,
+                    stats_ref,
                 )
                 .await
             };
 
             // Persist assistant response.
-            if let Some(response_text) = assistant_text {
-                let assistant_msg = serde_json::json!({"role": "assistant", "content": response_text, "model": model_id, "provider": provider_name});
+            if let Some((response_text, input_tokens, output_tokens)) = assistant_text {
+                let assistant_msg = serde_json::json!({"role": "assistant", "content": response_text, "model": model_id, "provider": provider_name, "inputTokens": input_tokens, "outputTokens": output_tokens});
                 if let Err(e) = session_store
                     .append(&session_key_clone, &assistant_msg)
                     .await
@@ -594,9 +616,11 @@ async fn run_with_tools(
     history: &[serde_json::Value],
     session_key: &str,
     project_context: Option<&str>,
-) -> Option<String> {
+    session_context: Option<&str>,
+) -> Option<(String, u32, u32)> {
     let native_tools = provider.supports_tools();
-    let system_prompt = build_system_prompt(tool_registry, native_tools, project_context);
+    let system_prompt =
+        build_system_prompt_with_session(tool_registry, native_tools, project_context, session_context);
 
     // Broadcast tool events to the UI as they happen.
     let state_for_events = Arc::clone(state);
@@ -667,6 +691,12 @@ async fn run_with_tools(
                     }
                     payload
                 },
+                RunnerEvent::ThinkingText(text) => serde_json::json!({
+                    "runId": run_id,
+                    "sessionKey": sk,
+                    "state": "thinking_text",
+                    "text": text,
+                }),
                 RunnerEvent::TextDelta(text) => serde_json::json!({
                     "runId": run_id,
                     "sessionKey": sk,
@@ -691,14 +721,18 @@ async fn run_with_tools(
         Some(history.to_vec())
     };
 
+    // Inject session key into tool call params so tools can resolve per-session state.
+    let tool_context = serde_json::json!({ "_session_key": session_key });
+
     let provider_ref = provider.clone();
-    match run_agent_loop(
+    match run_agent_loop_with_context(
         provider,
         tool_registry,
         &system_prompt,
         text,
         Some(&on_event),
         hist,
+        Some(tool_context),
     )
     .await
     {
@@ -727,7 +761,7 @@ async fn run_with_tools(
                 BroadcastOpts::default(),
             )
             .await;
-            Some(result.text)
+            Some((result.text, result.usage.input_tokens, result.usage.output_tokens))
         },
         Err(e) => {
             warn!(run_id, error = %e, "agent run error");
@@ -760,9 +794,16 @@ async fn run_streaming(
     history: &[serde_json::Value],
     session_key: &str,
     project_context: Option<&str>,
-) -> Option<String> {
+    session_context: Option<&str>,
+) -> Option<(String, u32, u32)> {
     let mut messages: Vec<serde_json::Value> = Vec::new();
-    // Prepend project context as a system message if available.
+    // Prepend session + project context as system messages.
+    if let Some(ctx) = session_context {
+        messages.push(serde_json::json!({
+            "role": "system",
+            "content": format!("## Current Session\n\n{ctx}"),
+        }));
+    }
     if let Some(ctx) = project_context {
         messages.push(serde_json::json!({
             "role": "system",
@@ -818,7 +859,7 @@ async fn run_streaming(
                     BroadcastOpts::default(),
                 )
                 .await;
-                return Some(accumulated);
+                return Some((accumulated, usage.input_tokens, usage.output_tokens));
             },
             StreamEvent::Error(msg) => {
                 warn!(run_id, error = %msg, "chat stream error");

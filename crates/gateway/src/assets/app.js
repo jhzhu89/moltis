@@ -79,6 +79,37 @@
   function setSessionModel(sessionKey, modelId) {
     sendRpc("sessions.patch", { key: sessionKey, model: modelId });
   }
+
+  // ── Sandbox toggle ───────────────────────────────────────────
+  var sandboxToggleBtn = $("sandboxToggle");
+  var sandboxLabel = $("sandboxLabel");
+  var sessionSandboxEnabled = true;
+
+  function updateSandboxUI(enabled) {
+    sessionSandboxEnabled = !!enabled;
+    if (sessionSandboxEnabled) {
+      sandboxLabel.textContent = "sandboxed";
+      sandboxToggleBtn.style.borderColor = "var(--accent, #f59e0b)";
+      sandboxToggleBtn.style.color = "var(--accent, #f59e0b)";
+    } else {
+      sandboxLabel.textContent = "direct";
+      sandboxToggleBtn.style.borderColor = "";
+      sandboxToggleBtn.style.color = "var(--muted)";
+    }
+  }
+
+  updateSandboxUI(true); // default: sandboxed
+
+  sandboxToggleBtn.addEventListener("click", function () {
+    var newVal = !sessionSandboxEnabled;
+    sendRpc("sessions.patch", { key: activeSessionKey, sandbox_enabled: newVal }).then(function (res) {
+      if (res && res.result) {
+        updateSandboxUI(res.result.sandbox_enabled);
+      } else {
+        updateSandboxUI(newVal);
+      }
+    });
+  });
   var sessionsPanel = $("sessionsPanel");
   var sessionList = $("sessionList");
   var newSessionBtn = $("newSessionBtn");
@@ -118,10 +149,7 @@
     sendRpc("models.list", {}).then(function (res) {
       if (!res || !res.ok) return;
       models = res.payload || [];
-      if (models.length === 0) {
-        if (modelCombo) modelCombo.classList.add("hidden");
-        return;
-      }
+      if (models.length === 0) return;
       var saved = localStorage.getItem("moltis-model") || "";
       var found = models.find(function (m) { return m.id === saved; });
       if (found) {
@@ -132,7 +160,6 @@
         if (modelComboLabel) modelComboLabel.textContent = models[0].displayName || models[0].id;
         localStorage.setItem("moltis-model", selectedModelId);
       }
-      if (modelCombo) modelCombo.classList.remove("hidden");
     });
   }
 
@@ -1320,6 +1347,22 @@
     return String(n);
   }
 
+  var chatBatchLoading = false;
+
+  // Scroll chat to bottom and keep it pinned until layout settles.
+  // Uses a ResizeObserver to catch any late layout shifts (sidebar re-render,
+  // font loading, async style recalc) and re-scrolls until stable.
+  function scrollChatToBottom() {
+    if (!chatMsgBox) return;
+    chatMsgBox.scrollTop = chatMsgBox.scrollHeight;
+    var box = chatMsgBox;
+    var observer = new ResizeObserver(function () {
+      box.scrollTop = box.scrollHeight;
+    });
+    observer.observe(box);
+    setTimeout(function () { observer.disconnect(); }, 500);
+  }
+
   function chatAddMsg(cls, content, isHtml) {
     if (!chatMsgBox) return null;
     var el = document.createElement("div");
@@ -1332,7 +1375,7 @@
       el.textContent = content;
     }
     chatMsgBox.appendChild(el);
-    chatMsgBox.scrollTop = chatMsgBox.scrollHeight;
+    if (!chatBatchLoading) chatMsgBox.scrollTop = chatMsgBox.scrollHeight;
     return el;
   }
 
@@ -1502,8 +1545,12 @@
             localStorage.setItem("moltis-model", found.id);
           }
         }
+        // Restore sandbox state
+        updateSandboxUI(entry.sandbox_enabled);
         var history = res.payload.history || [];
         var msgEls = [];
+        sessionTokens = { input: 0, output: 0 };
+        chatBatchLoading = true;
         history.forEach(function (msg) {
           if (msg.role === "user") {
             msgEls.push(chatAddMsg("user", renderMarkdown(msg.content || ""), true));
@@ -1512,17 +1559,29 @@
             if (el && msg.model) {
               var ft = document.createElement("div");
               ft.className = "msg-model-footer";
-              ft.textContent = msg.provider ? msg.provider + " / " + msg.model : msg.model;
+              var ftText = msg.provider ? msg.provider + " / " + msg.model : msg.model;
+              if (msg.inputTokens || msg.outputTokens) {
+                ftText += " \u00b7 " + formatTokens(msg.inputTokens || 0) + " in / " + formatTokens(msg.outputTokens || 0) + " out";
+              }
+              ft.textContent = ftText;
               el.appendChild(ft);
+            }
+            if (msg.inputTokens || msg.outputTokens) {
+              sessionTokens.input += (msg.inputTokens || 0);
+              sessionTokens.output += (msg.outputTokens || 0);
             }
             msgEls.push(el);
           } else {
             msgEls.push(null);
           }
         });
+        chatBatchLoading = false;
+        updateTokenBar();
 
         if (searchContext && searchContext.query && chatMsgBox) {
           highlightAndScroll(msgEls, searchContext.messageIndex, searchContext.query);
+        } else {
+          scrollChatToBottom();
         }
 
         var item = sessionList.querySelector('.session-item[data-session-key="' + key + '"]');
@@ -1537,7 +1596,7 @@
           thinkDots.innerHTML = "<span></span><span></span><span></span>";
           thinkEl.appendChild(thinkDots);
           chatMsgBox.appendChild(thinkEl);
-          chatMsgBox.scrollTop = chatMsgBox.scrollHeight;
+          scrollChatToBottom();
         }
         if (!sessionList.querySelector('.session-meta[data-session-key="' + key + '"]')) {
           fetchSessions();
@@ -1705,9 +1764,9 @@
   var chatPageHTML =
     '<div class="flex-1 flex flex-col min-w-0">' +
       '<div class="px-4 py-1.5 border-b border-[var(--border)] bg-[var(--surface)] flex items-center gap-2 shrink-0">' +
-        '<div id="modelCombo" class="model-combo hidden">' +
+        '<div id="modelCombo" class="model-combo">' +
           '<button id="modelComboBtn" class="model-combo-btn" type="button">' +
-            '<span id="modelComboLabel">no models</span>' +
+            '<span id="modelComboLabel">' + (selectedModelId || 'loading\u2026') + '</span>' +
             '<svg class="model-combo-chevron" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" width="12" height="12"><path d="M19.5 8.25l-7.5 7.5-7.5-7.5"/></svg>' +
           '</button>' +
           '<div id="modelDropdown" class="model-dropdown hidden">' +
@@ -1741,13 +1800,12 @@
     modelDropdownList = $("modelDropdownList");
     bindModelComboEvents();
 
-    // Show model selector if models are loaded
-    if (models.length > 0 && modelCombo) {
-      modelCombo.classList.remove("hidden");
+    // Update model selector label if models are already loaded
+    if (models.length > 0 && modelComboLabel) {
       var found = models.find(function (m) { return m.id === selectedModelId; });
-      if (found && modelComboLabel) {
+      if (found) {
         modelComboLabel.textContent = found.displayName || found.id;
-      } else if (models[0] && modelComboLabel) {
+      } else if (models[0]) {
         modelComboLabel.textContent = models[0].displayName || models[0].id;
       }
     }
@@ -2793,6 +2851,17 @@
             thinkEl.appendChild(thinkDots);
             chatMsgBox.appendChild(thinkEl);
             chatMsgBox.scrollTop = chatMsgBox.scrollHeight;
+          } else if (p.state === "thinking_text" && isActive && isChatPage) {
+            var indicator = document.getElementById("thinkingIndicator");
+            if (indicator) {
+              // Remove all children safely (dots or previous text)
+              while (indicator.firstChild) indicator.removeChild(indicator.firstChild);
+              var textEl = document.createElement("span");
+              textEl.className = "thinking-text";
+              textEl.textContent = p.text;
+              indicator.appendChild(textEl);
+              chatMsgBox.scrollTop = chatMsgBox.scrollHeight;
+            }
           } else if (p.state === "thinking_done" && isActive && isChatPage) {
             removeThinking();
           } else if (p.state === "tool_call_start" && isActive && isChatPage) {

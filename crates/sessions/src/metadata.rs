@@ -27,6 +27,8 @@ pub struct SessionEntry {
     pub archived: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_enabled: Option<bool>,
 }
 
 /// JSON file-backed index mapping session key → SessionEntry.
@@ -91,6 +93,7 @@ impl SessionMetadata {
                 project_id: None,
                 archived: false,
                 worktree_branch: None,
+                sandbox_enabled: None,
             })
     }
 
@@ -114,6 +117,14 @@ impl SessionMetadata {
     pub fn set_project_id(&mut self, key: &str, project_id: Option<String>) {
         if let Some(entry) = self.entries.get_mut(key) {
             entry.project_id = project_id;
+            entry.updated_at = now_ms();
+        }
+    }
+
+    /// Set the sandbox_enabled override for a session.
+    pub fn set_sandbox_enabled(&mut self, key: &str, enabled: Option<bool>) {
+        if let Some(entry) = self.entries.get_mut(key) {
+            entry.sandbox_enabled = enabled;
             entry.updated_at = now_ms();
         }
     }
@@ -150,6 +161,7 @@ struct SessionRow {
     project_id: Option<String>,
     archived: i32,
     worktree_branch: Option<String>,
+    sandbox_enabled: Option<i32>,
 }
 
 impl From<SessionRow> for SessionEntry {
@@ -165,6 +177,7 @@ impl From<SessionRow> for SessionEntry {
             project_id: r.project_id,
             archived: r.archived != 0,
             worktree_branch: r.worktree_branch,
+            sandbox_enabled: r.sandbox_enabled.map(|v| v != 0),
         }
     }
 }
@@ -187,26 +200,42 @@ impl SqliteSessionMetadata {
                 message_count   INTEGER NOT NULL DEFAULT 0,
                 project_id      TEXT REFERENCES projects(id) ON DELETE SET NULL,
                 archived        INTEGER NOT NULL DEFAULT 0,
-                worktree_branch TEXT
+                worktree_branch TEXT,
+                sandbox_enabled INTEGER
             )"#,
         )
         .execute(pool)
         .await?;
+
+        // Migrations for columns added after initial release.
+        sqlx::query("ALTER TABLE sessions ADD COLUMN sandbox_enabled INTEGER")
+            .execute(pool)
+            .await
+            .ok(); // ignore if column already exists
+
         Ok(())
     }
 
     pub async fn get(&self, key: &str) -> Option<SessionEntry> {
-        sqlx::query_as::<_, SessionRow>("SELECT * FROM sessions WHERE key = ?")
+        match sqlx::query_as::<_, SessionRow>("SELECT * FROM sessions WHERE key = ?")
             .bind(key)
             .fetch_optional(&self.pool)
             .await
-            .ok()
-            .flatten()
-            .map(Into::into)
+        {
+            Ok(row) => row.map(Into::into),
+            Err(e) => {
+                tracing::error!("sessions.get failed: {e}");
+                None
+            }
+        }
     }
 
     /// Insert or update an entry. Returns the entry.
-    pub async fn upsert(&self, key: &str, label: Option<String>) -> SessionEntry {
+    pub async fn upsert(
+        &self,
+        key: &str,
+        label: Option<String>,
+    ) -> Result<SessionEntry, sqlx::Error> {
         let now = now_ms() as i64;
         let id = uuid::Uuid::new_v4().to_string();
         sqlx::query(
@@ -222,9 +251,10 @@ impl SqliteSessionMetadata {
         .bind(now)
         .bind(now)
         .execute(&self.pool)
-        .await
-        .ok();
-        self.get(key).await.unwrap()
+        .await?;
+        self.get(key).await.ok_or_else(|| {
+            sqlx::Error::RowNotFound
+        })
     }
 
     pub async fn set_model(&self, key: &str, model: Option<String>) {
@@ -253,6 +283,18 @@ impl SqliteSessionMetadata {
         let now = now_ms() as i64;
         sqlx::query("UPDATE sessions SET project_id = ?, updated_at = ? WHERE key = ?")
             .bind(&project_id)
+            .bind(now)
+            .bind(key)
+            .execute(&self.pool)
+            .await
+            .ok();
+    }
+
+    pub async fn set_sandbox_enabled(&self, key: &str, enabled: Option<bool>) {
+        let now = now_ms() as i64;
+        let val = enabled.map(|b| b as i32);
+        sqlx::query("UPDATE sessions SET sandbox_enabled = ?, updated_at = ? WHERE key = ?")
+            .bind(val)
             .bind(now)
             .bind(key)
             .execute(&self.pool)
@@ -352,9 +394,10 @@ mod tests {
         let pool = sqlite_pool().await;
         let meta = SqliteSessionMetadata::new(pool);
 
-        meta.upsert("main", None).await;
+        meta.upsert("main", None).await.unwrap();
         meta.upsert("session:abc", Some("My Chat".to_string()))
-            .await;
+            .await
+            .unwrap();
 
         let list = meta.list().await;
         assert_eq!(list.len(), 2);
@@ -367,7 +410,7 @@ mod tests {
         let pool = sqlite_pool().await;
         let meta = SqliteSessionMetadata::new(pool);
 
-        meta.upsert("main", None).await;
+        meta.upsert("main", None).await.unwrap();
         assert!(meta.get("main").await.is_some());
         meta.remove("main").await;
         assert!(meta.get("main").await.is_none());
@@ -378,7 +421,7 @@ mod tests {
         let pool = sqlite_pool().await;
         let meta = SqliteSessionMetadata::new(pool);
 
-        meta.upsert("main", None).await;
+        meta.upsert("main", None).await.unwrap();
         meta.touch("main", 5).await;
         assert_eq!(meta.get("main").await.unwrap().message_count, 5);
     }
@@ -392,5 +435,41 @@ mod tests {
         meta.upsert("main", None);
         meta.touch("main", 5);
         assert_eq!(meta.get("main").unwrap().message_count, 5);
+    }
+
+    #[test]
+    fn test_sandbox_enabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("meta.json");
+        let mut meta = SessionMetadata::load(path.clone()).unwrap();
+
+        meta.upsert("main", None);
+        assert!(meta.get("main").unwrap().sandbox_enabled.is_none());
+
+        meta.set_sandbox_enabled("main", Some(true));
+        assert_eq!(meta.get("main").unwrap().sandbox_enabled, Some(true));
+
+        meta.set_sandbox_enabled("main", None);
+        assert!(meta.get("main").unwrap().sandbox_enabled.is_none());
+
+        // Verify it round-trips through save/load.
+        meta.set_sandbox_enabled("main", Some(false));
+        meta.save().unwrap();
+        let reloaded = SessionMetadata::load(path).unwrap();
+        assert_eq!(reloaded.get("main").unwrap().sandbox_enabled, Some(false));
+    }
+
+    #[test]
+    fn test_sandbox_enabled_serde_compat() {
+        // Existing metadata without sandbox_enabled should deserialize fine.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("meta.json");
+        std::fs::write(
+            &path,
+            r#"{"main":{"id":"1","key":"main","label":null,"created_at":0,"updated_at":0,"message_count":0}}"#,
+        )
+        .unwrap();
+        let meta = SessionMetadata::load(path).unwrap();
+        assert!(meta.get("main").unwrap().sandbox_enabled.is_none());
     }
 }
