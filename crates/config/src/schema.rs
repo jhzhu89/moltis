@@ -12,6 +12,7 @@ pub struct MoltisConfig {
     pub tools: ToolsConfig,
     pub skills: SkillsConfig,
     pub channels: ChannelsConfig,
+    pub tls: TlsConfig,
 }
 
 /// Skills configuration.
@@ -40,6 +41,37 @@ pub struct ChannelsConfig {
     /// Telegram bot accounts, keyed by account ID.
     #[serde(default)]
     pub telegram: HashMap<String, serde_json::Value>,
+}
+
+/// TLS configuration for the gateway HTTPS server.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TlsConfig {
+    /// Enable HTTPS with auto-generated certificates. Defaults to true.
+    pub enabled: bool,
+    /// Auto-generate a local CA and server certificate on first run.
+    pub auto_generate: bool,
+    /// Path to a custom server certificate (PEM). Overrides auto-generation.
+    pub cert_path: Option<String>,
+    /// Path to a custom server private key (PEM). Overrides auto-generation.
+    pub key_path: Option<String>,
+    /// Path to the CA certificate (PEM) used for trust instructions.
+    pub ca_cert_path: Option<String>,
+    /// Port for the plain-HTTP redirect/CA-download server.
+    pub http_redirect_port: Option<u16>,
+}
+
+impl Default for TlsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            auto_generate: true,
+            cert_path: None,
+            key_path: None,
+            ca_cert_path: None,
+            http_redirect_port: Some(18790),
+        }
+    }
 }
 
 /// Tools configuration (exec, sandbox, policy).

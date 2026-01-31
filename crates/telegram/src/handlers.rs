@@ -192,12 +192,7 @@ pub async fn handle_message_direct(
                     if let Some(bot) = bot {
                         match list_result {
                             Ok(text) => {
-                                send_sessions_keyboard(
-                                    &bot,
-                                    &reply_target.chat_id,
-                                    &text,
-                                )
-                                .await;
+                                send_sessions_keyboard(&bot, &reply_target.chat_id, &text).await;
                             },
                             Err(e) => {
                                 let _ = bot
@@ -368,10 +363,7 @@ pub async fn handle_callback_query(
 
         // Answer callback query with the response text (shows as toast).
         if let Some(ref bot) = bot {
-            let _ = bot
-                .answer_callback_query(&query.id)
-                .text(&response)
-                .await;
+            let _ = bot.answer_callback_query(&query.id).text(&response).await;
         }
 
         // Also send as a regular message for visibility.

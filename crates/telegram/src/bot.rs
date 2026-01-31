@@ -137,9 +137,13 @@ pub async fn start_polling(
                                     callback_data = ?query.data,
                                     "received telegram callback query"
                                 );
-                                if let Err(e) =
-                                    handlers::handle_callback_query(query, &bot, &aid, &poll_accounts)
-                                        .await
+                                if let Err(e) = handlers::handle_callback_query(
+                                    query,
+                                    &bot,
+                                    &aid,
+                                    &poll_accounts,
+                                )
+                                .await
                                 {
                                     error!(
                                         account_id = aid,

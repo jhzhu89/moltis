@@ -9,11 +9,13 @@ use {
 
 use {moltis_channels::ChannelPlugin, moltis_telegram::TelegramPlugin};
 
-use moltis_channels::{
-    message_log::MessageLog,
-    store::{ChannelStore, StoredChannel},
+use {
+    moltis_channels::{
+        message_log::MessageLog,
+        store::{ChannelStore, StoredChannel},
+    },
+    moltis_sessions::metadata::SqliteSessionMetadata,
 };
-use moltis_sessions::metadata::SqliteSessionMetadata;
 
 use crate::services::{ChannelService, ServiceResult};
 
@@ -82,9 +84,7 @@ impl ChannelService for LiveChannelService {
                         let sessions: Vec<_> = bound
                             .iter()
                             .map(|s| {
-                                let is_active = active_map
-                                    .iter()
-                                    .any(|(_, sk)| sk == &s.key);
+                                let is_active = active_map.iter().any(|(_, sk)| sk == &s.key);
                                 serde_json::json!({
                                     "key": s.key,
                                     "label": s.label,

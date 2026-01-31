@@ -7,6 +7,7 @@ version.workspace = true
 anyhow                = { workspace = true }
 async-trait           = "0.1"
 axum                  = { workspace = true }
+axum-server           = { optional = true, workspace = true }
 directories.workspace = true
 futures               = { workspace = true }
 hostname              = "0.4"
@@ -27,11 +28,15 @@ moltis-skills         = { workspace = true }
 moltis-telegram       = { workspace = true }
 moltis-tools          = { workspace = true }
 pulldown-cmark        = { default-features = false, features = ["html"], version = "0.12" }
+rcgen                 = { optional = true, workspace = true }
 reqwest               = { workspace = true }
+rustls                = { optional = true, workspace = true }
+rustls-pemfile        = { optional = true, workspace = true }
 serde                 = { workspace = true }
 serde_json            = { workspace = true }
 sqlx                  = { workspace = true }
 tokio                 = { workspace = true }
+tokio-rustls          = { optional = true, workspace = true }
 tokio-stream          = { workspace = true }
 tokio-tungstenite     = { workspace = true }
 toml                  = { workspace = true }
@@ -41,7 +46,8 @@ tracing-subscriber    = { workspace = true }
 uuid                  = { workspace = true }
 
 [features]
-default = ["web-ui"]
+default = ["tls", "web-ui"]
+tls     = ["dep:axum-server", "dep:rcgen", "dep:rustls", "dep:rustls-pemfile", "dep:tokio-rustls"]
 web-ui  = []
 
 [dev-dependencies]

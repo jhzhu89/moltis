@@ -1,5 +1,8 @@
 use std::{net::SocketAddr, sync::Arc};
 
+#[cfg(feature = "tls")]
+use std::path::PathBuf;
+
 #[cfg(feature = "web-ui")]
 use axum::response::Html;
 use {
@@ -42,6 +45,9 @@ use crate::{
     state::GatewayState,
     ws::handle_connection,
 };
+
+#[cfg(feature = "tls")]
+use crate::tls::CertManager;
 
 // ── Shared app state ─────────────────────────────────────────────────────────
 
@@ -440,10 +446,73 @@ pub async fn start_gateway(
 
     let methods = Arc::new(MethodRegistry::new());
 
-    let app = build_gateway_app(Arc::clone(&state), Arc::clone(&methods));
+    #[cfg_attr(not(feature = "tls"), allow(unused_mut))]
+    let mut app = build_gateway_app(Arc::clone(&state), Arc::clone(&methods));
 
     let addr: SocketAddr = format!("{bind}:{port}").parse()?;
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+
+    // Resolve TLS configuration (only when compiled with the `tls` feature).
+    #[cfg(feature = "tls")]
+    let tls_active = config.tls.enabled;
+    #[cfg(not(feature = "tls"))]
+    let tls_active = false;
+
+    #[cfg(feature = "tls")]
+    let mut ca_cert_path: Option<PathBuf> = None;
+    #[cfg(feature = "tls")]
+    let mut rustls_config: Option<rustls::ServerConfig> = None;
+
+    #[cfg(feature = "tls")]
+    if tls_active {
+        let tls_config = &config.tls;
+        let (ca_path, cert_path, key_path) = if let (Some(cert_str), Some(key_str)) =
+            (&tls_config.cert_path, &tls_config.key_path)
+        {
+            // User-provided certs.
+            let cert = PathBuf::from(cert_str);
+            let key = PathBuf::from(key_str);
+            let ca = tls_config.ca_cert_path.as_ref().map(PathBuf::from);
+            (ca, cert, key)
+        } else if tls_config.auto_generate {
+            // Auto-generate certificates.
+            let mgr = crate::tls::FsCertManager::new()?;
+            let (ca, cert, key) = mgr.ensure_certs()?;
+            (Some(ca), cert, key)
+        } else {
+            anyhow::bail!(
+                "TLS is enabled but no certificates configured and auto_generate is false"
+            );
+        };
+
+        ca_cert_path = ca_path.clone();
+
+        let mgr = crate::tls::FsCertManager::new()?;
+        rustls_config = Some(mgr.build_rustls_config(&cert_path, &key_path)?);
+
+        // Add /certs/ca.pem route to the main HTTPS app if we have a CA cert.
+        if let Some(ref ca) = ca_path {
+            let ca_bytes = Arc::new(std::fs::read(ca)?);
+            let ca_clone = Arc::clone(&ca_bytes);
+            app = app.route(
+                "/certs/ca.pem",
+                get(move || {
+                    let data = Arc::clone(&ca_clone);
+                    async move {
+                        (
+                            [
+                                ("content-type", "application/x-pem-file"),
+                                (
+                                    "content-disposition",
+                                    "attachment; filename=\"moltis-ca.pem\"",
+                                ),
+                            ],
+                            data.as_ref().clone(),
+                        )
+                    }
+                }),
+            );
+        }
+    }
 
     // Count enabled skills and repos for startup banner.
     let (skill_count, repo_count) = {
@@ -462,12 +531,19 @@ pub async fn start_gateway(
     };
 
     // Startup banner.
-    let lines = [
+    let scheme = if tls_active {
+        "https"
+    } else {
+        "http"
+    };
+    #[cfg_attr(not(feature = "tls"), allow(unused_mut))]
+    let mut lines = vec![
         format!("moltis gateway v{}", state.version),
         format!(
-            "protocol v{}, listening on http://{}",
+            "protocol v{}, listening on {}://{}",
             moltis_protocol::PROTOCOL_VERSION,
-            addr
+            scheme,
+            addr,
         ),
         format!("{} methods registered", methods.method_names().len()),
         format!("llm: {}", provider_summary),
@@ -482,6 +558,18 @@ pub async fn start_gateway(
             }
         ),
     ];
+    #[cfg(feature = "tls")]
+    if tls_active {
+        if let Some(ref ca) = ca_cert_path {
+            let http_port = config.tls.http_redirect_port.unwrap_or(18790);
+            lines.push(format!(
+                "CA cert: http://{}:{}/certs/ca.pem",
+                bind, http_port
+            ));
+            lines.push(format!("  or: {}", ca.display()));
+        }
+        lines.push("run `moltis trust-ca` to remove browser warnings".into());
+    }
     let width = lines.iter().map(|l| l.len()).max().unwrap_or(0) + 4;
     info!("┌{}┐", "─".repeat(width));
     for line in &lines {
@@ -533,7 +621,34 @@ pub async fn start_gateway(
         tracing::warn!("failed to start cron scheduler: {e}");
     }
 
-    // Run the server with ConnectInfo for remote IP extraction.
+    #[cfg(feature = "tls")]
+    if tls_active {
+        // Spawn HTTP redirect server on secondary port.
+        if let Some(ref ca) = ca_cert_path {
+            let http_port = config.tls.http_redirect_port.unwrap_or(18790);
+            let bind_clone = bind.to_string();
+            let ca_clone = ca.clone();
+            tokio::spawn(async move {
+                if let Err(e) =
+                    crate::tls::start_http_redirect_server(&bind_clone, http_port, port, &ca_clone)
+                        .await
+                {
+                    tracing::error!("HTTP redirect server failed: {e}");
+                }
+            });
+        }
+
+        // Run HTTPS server.
+        let tls_cfg = rustls_config.expect("rustls config must be set when TLS is active");
+        let rustls_cfg = axum_server::tls_rustls::RustlsConfig::from_config(Arc::new(tls_cfg));
+        axum_server::bind_rustls(addr, rustls_cfg)
+            .serve(app.into_make_service_with_connect_info::<SocketAddr>())
+            .await?;
+        return Ok(());
+    }
+
+    // Plain HTTP server (existing behavior, or TLS feature disabled).
+    let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),

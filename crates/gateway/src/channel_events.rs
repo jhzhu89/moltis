@@ -6,8 +6,10 @@ use {
     tracing::{debug, error, info, warn},
 };
 
-use moltis_channels::{ChannelEvent, ChannelEventSink, ChannelMessageMeta, ChannelReplyTarget};
-use moltis_sessions::metadata::SqliteSessionMetadata;
+use {
+    moltis_channels::{ChannelEvent, ChannelEventSink, ChannelMessageMeta, ChannelReplyTarget},
+    moltis_sessions::metadata::SqliteSessionMetadata,
+};
 
 use crate::{
     broadcast::{BroadcastOpts, broadcast},
@@ -318,11 +320,12 @@ impl ChannelEventSink for GatewayChannelEventSink {
                     // List mode.
                     let mut lines = Vec::new();
                     for (i, s) in sessions.iter().enumerate() {
-                        let label = s
-                            .label
-                            .as_deref()
-                            .unwrap_or(&s.key);
-                        let marker = if s.key == session_key { " *" } else { "" };
+                        let label = s.label.as_deref().unwrap_or(&s.key);
+                        let marker = if s.key == session_key {
+                            " *"
+                        } else {
+                            ""
+                        };
                         lines.push(format!(
                             "{}. {} ({} msgs){}",
                             i + 1,
@@ -339,10 +342,7 @@ impl ChannelEventSink for GatewayChannelEventSink {
                         .parse()
                         .map_err(|_| anyhow!("usage: /sessions [number]"))?;
                     if n == 0 || n > sessions.len() {
-                        return Err(anyhow!(
-                            "invalid session number. Use 1–{}.",
-                            sessions.len()
-                        ));
+                        return Err(anyhow!("invalid session number. Use 1–{}.", sessions.len()));
                     }
                     let target_session = &sessions[n - 1];
 
@@ -430,7 +430,10 @@ mod tests {
             account_id: "bot1".into(),
             chat_id: "-100999".into(),
         };
-        assert_eq!(default_channel_session_key(&target), "telegram:bot1:-100999");
+        assert_eq!(
+            default_channel_session_key(&target),
+            "telegram:bot1:-100999"
+        );
     }
 
     #[test]

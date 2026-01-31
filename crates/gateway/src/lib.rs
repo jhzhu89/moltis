@@ -30,4 +30,6 @@ pub mod server;
 pub mod services;
 pub mod session;
 pub mod state;
+#[cfg(feature = "tls")]
+pub mod tls;
 pub mod ws;

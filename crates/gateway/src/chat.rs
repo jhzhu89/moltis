@@ -300,8 +300,7 @@ impl ChatService for LiveChatService {
                     let account_id = target.account_id.clone();
                     let chat_id = target.chat_id.clone();
                     tokio::spawn(async move {
-                        if let Err(e) =
-                            outbound.send_text(&account_id, &chat_id, &echo_text).await
+                        if let Err(e) = outbound.send_text(&account_id, &chat_id, &echo_text).await
                         {
                             warn!("failed to echo web message to channel: {e}");
                         }

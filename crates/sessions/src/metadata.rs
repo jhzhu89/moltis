@@ -456,9 +456,7 @@ impl SqliteSessionMetadata {
         channel_type: &str,
         account_id: &str,
     ) -> Vec<SessionEntry> {
-        let pattern = format!(
-            r#"%"channel_type":"{channel_type}"%"account_id":"{account_id}"%"#,
-        );
+        let pattern = format!(r#"%"channel_type":"{channel_type}"%"account_id":"{account_id}"%"#,);
         sqlx::query_as::<_, SessionRow>(
             "SELECT * FROM sessions WHERE channel_binding LIKE ? ORDER BY created_at ASC",
         )
@@ -779,18 +777,14 @@ mod tests {
         meta.set_channel_binding("session:new1", Some(binding.clone()))
             .await;
 
-        let sessions = meta
-            .list_channel_sessions("telegram", "bot1", "123")
-            .await;
+        let sessions = meta.list_channel_sessions("telegram", "bot1", "123").await;
         assert_eq!(sessions.len(), 2);
         let keys: Vec<&str> = sessions.iter().map(|s| s.key.as_str()).collect();
         assert!(keys.contains(&"telegram:bot1:123"));
         assert!(keys.contains(&"session:new1"));
 
         // Different chat should return empty.
-        let other = meta
-            .list_channel_sessions("telegram", "bot1", "999")
-            .await;
+        let other = meta.list_channel_sessions("telegram", "bot1", "999").await;
         assert!(other.is_empty());
     }
 

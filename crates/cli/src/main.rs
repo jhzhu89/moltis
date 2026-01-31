@@ -76,6 +76,9 @@ enum Commands {
         #[command(subcommand)]
         action: SkillAction,
     },
+    /// Install the Moltis CA certificate into the system trust store.
+    #[cfg(feature = "tls")]
+    TrustCa,
 }
 
 #[derive(Subcommand)]
@@ -149,6 +152,80 @@ fn init_telemetry(cli: &Cli, log_buffer: Option<LogBuffer>) {
     }
 }
 
+#[cfg(feature = "tls")]
+async fn trust_ca() -> anyhow::Result<()> {
+    let cert_dir = moltis_gateway::tls::cert_dir()?;
+    let ca_path = cert_dir.join("ca.pem");
+
+    if !ca_path.exists() {
+        eprintln!(
+            "CA certificate not found at {}. Start the gateway first to generate certificates.",
+            ca_path.display()
+        );
+        return Ok(());
+    }
+
+    eprintln!("Installing CA certificate: {}", ca_path.display());
+
+    #[cfg(target_os = "macos")]
+    {
+        let status = std::process::Command::new("security")
+            .args([
+                "add-trusted-cert",
+                "-r",
+                "trustRoot",
+                "-k",
+                &format!(
+                    "{}/Library/Keychains/login.keychain-db",
+                    std::env::var("HOME").unwrap_or_default()
+                ),
+            ])
+            .arg(&ca_path)
+            .status()?;
+        if status.success() {
+            eprintln!(
+                "CA certificate installed successfully. Restart your browser to pick up the change."
+            );
+        } else {
+            eprintln!("Failed to install CA certificate (exit code: {})", status);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let dest = std::path::PathBuf::from("/usr/local/share/ca-certificates/moltis-ca.crt");
+        eprintln!("Copying CA to {} (may require sudo)", dest.display());
+        let status = std::process::Command::new("sudo")
+            .args(["cp"])
+            .arg(&ca_path)
+            .arg(&dest)
+            .status()?;
+        if status.success() {
+            let update = std::process::Command::new("sudo")
+                .arg("update-ca-certificates")
+                .status()?;
+            if update.success() {
+                eprintln!("CA certificate installed successfully.");
+            } else {
+                eprintln!("update-ca-certificates failed (exit code: {})", update);
+            }
+        } else {
+            eprintln!("Failed to copy CA certificate (exit code: {})", status);
+        }
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        eprintln!(
+            "Automatic trust installation is not supported on this OS.\n\
+             Manually import the CA certificate from: {}",
+            ca_path.display()
+        );
+    }
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
@@ -178,6 +255,8 @@ async fn main() -> anyhow::Result<()> {
         Commands::Onboard => moltis_onboarding::wizard::run_onboarding().await,
         Commands::Auth { action } => auth_commands::handle_auth(action).await,
         Commands::Skills { action } => handle_skills(action).await,
+        #[cfg(feature = "tls")]
+        Commands::TrustCa => trust_ca().await,
         _ => {
             eprintln!("command not yet implemented");
             Ok(())

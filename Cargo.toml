@@ -73,6 +73,12 @@ open         = "5.3"
 sha2         = "0.10"
 teloxide     = { features = ["macros"], version = "0.13" }
 tokio-util   = "0.7"
+# TLS / certificate generation
+axum-server    = { features = ["tls-rustls"], version = "0.7" }
+rcgen          = "0.13"
+rustls         = { features = ["ring"], version = "0.23" }
+rustls-pemfile = "2"
+tokio-rustls   = "0.26"
 
 # Workspace crates
 moltis-agents     = { features = ["provider-github-copilot", "provider-kimi-code", "provider-openai-codex"], path = "crates/agents" }

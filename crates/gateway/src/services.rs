@@ -581,7 +581,11 @@ impl SkillsService for NoopSkillsService {
                 .and_then(|p| p.strip_prefix('/'))
                 .map(|path_in_repo| {
                     if source.starts_with("https://") || source.starts_with("http://") {
-                        format!("{}/tree/main/{}", source.trim_end_matches('/'), path_in_repo)
+                        format!(
+                            "{}/tree/main/{}",
+                            source.trim_end_matches('/'),
+                            path_in_repo
+                        )
                     } else {
                         format!("https://github.com/{}/tree/main/{}", source, path_in_repo)
                     }
