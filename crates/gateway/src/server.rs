@@ -196,7 +196,9 @@ pub async fn start_gateway(bind: &str, port: u16) -> anyhow::Result<()> {
     // Session service wired below after sandbox_router is created.
 
     // Wire live project service.
-    services.project = Arc::new(crate::project::LiveProjectService::new(project_store));
+    services.project = Arc::new(crate::project::LiveProjectService::new(Arc::clone(
+        &project_store,
+    )));
 
     // Initialize cron service with file-backed store.
     let cron_store: Arc<dyn moltis_cron::store::CronStore> =
@@ -298,10 +300,11 @@ pub async fn start_gateway(bind: &str, port: u16) -> anyhow::Result<()> {
         }
     }
 
-    // Wire live session service with sandbox router.
+    // Wire live session service with sandbox router and project store.
     services.session = Arc::new(
         LiveSessionService::new(Arc::clone(&session_store), Arc::clone(&session_metadata))
-            .with_sandbox_router(Arc::clone(&sandbox_router)),
+            .with_sandbox_router(Arc::clone(&sandbox_router))
+            .with_project_store(Arc::clone(&project_store)),
     );
 
     // Wire channel store and Telegram channel service.
