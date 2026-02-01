@@ -78,7 +78,30 @@ pub struct SandboxConfig {
 }
 
 /// Default packages installed in new sandbox containers.
-pub const DEFAULT_SANDBOX_PACKAGES: &[&str] = &["curl", "python3", "nodejs", "npm"];
+/// Inspired by GitHub Actions runner images — covers the most commonly needed
+/// CLI tools, language runtimes, and utilities for LLM-driven tasks.
+pub const DEFAULT_SANDBOX_PACKAGES: &[&str] = &[
+    // Networking & HTTP
+    "curl",
+    "wget",
+    "ca-certificates",
+    // Language runtimes
+    "python3",
+    "python3-pip",
+    "nodejs",
+    "npm",
+    // Common CLI utilities
+    "git",
+    "jq",
+    "zip",
+    "unzip",
+    "rsync",
+    "openssh-client",
+    // Build essentials (needed by many npm/pip packages)
+    "build-essential",
+    // Text processing
+    "ripgrep",
+];
 
 impl Default for SandboxConfig {
     fn default() -> Self {
