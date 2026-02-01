@@ -124,6 +124,14 @@ pub async fn start_gateway(
     }
 
     services.exec_approval = Arc::new(LiveExecApprovalService::new(Arc::clone(&approval_manager)));
+
+    // Wire live onboarding service.
+    let onboarding_config_path = moltis_config::find_or_default_config_path();
+    let live_onboarding =
+        moltis_onboarding::service::LiveOnboardingService::new(onboarding_config_path);
+    services = services.with_onboarding(Arc::new(
+        crate::onboarding::GatewayOnboardingService::new(live_onboarding),
+    ));
     services.provider_setup = Arc::new(LiveProviderSetupService::new(
         Arc::clone(&registry),
         config.providers.clone(),
@@ -704,34 +712,39 @@ async fn spa_fallback(uri: axum::http::Uri) -> impl IntoResponse {
         raw.replace("__BUILD_TS__", "dev")
     } else {
         // Production: inject content-hash versioned URLs for immutable caching
-        static HASH: std::sync::LazyLock<String> =
-            std::sync::LazyLock::new(asset_content_hash);
+        static HASH: std::sync::LazyLock<String> = std::sync::LazyLock::new(asset_content_hash);
         let versioned = format!("/assets/v/{}/", *HASH);
         raw.replace("__BUILD_TS__", &*HASH)
             .replace("/assets/", &versioned)
     };
 
-    (
-        [("cache-control", "no-cache, no-store")],
-        Html(body),
-    )
-        .into_response()
+    ([("cache-control", "no-cache, no-store")], Html(body)).into_response()
 }
 
 #[cfg(feature = "web-ui")]
 async fn api_bootstrap_handler(State(state): State<AppState>) -> impl IntoResponse {
     let gw = &state.gateway;
-    let (channels, sessions, models, projects) = tokio::join!(
+    let (channels, sessions, models, projects, wizard_status) = tokio::join!(
         gw.services.channel.status(),
         gw.services.session.list(),
         gw.services.model.list(),
         gw.services.project.list(),
+        gw.services.onboarding.wizard_status(),
     );
+    let onboarded = wizard_status
+        .as_ref()
+        .ok()
+        .and_then(|v| v.get("onboarded"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let identity = gw.services.agent.identity_get().await.ok();
     Json(serde_json::json!({
         "channels": channels.ok(),
         "sessions": sessions.ok(),
         "models": models.ok(),
         "projects": projects.ok(),
+        "onboarded": onboarded,
+        "identity": identity,
     }))
 }
 
@@ -788,11 +801,7 @@ async fn api_skills_search_handler(
     State(state): State<AppState>,
 ) -> impl IntoResponse {
     let source = params.get("source").cloned().unwrap_or_default();
-    let query = params
-        .get("q")
-        .cloned()
-        .unwrap_or_default()
-        .to_lowercase();
+    let query = params.get("q").cloned().unwrap_or_default().to_lowercase();
 
     let gw = &state.gateway;
     let repos = gw.services.skills.repos_list_full().await;
@@ -881,8 +890,7 @@ fn is_dev_assets() -> bool {
 /// mode (embedded assets) for cache-busting versioned URLs.
 #[cfg(feature = "web-ui")]
 fn asset_content_hash() -> String {
-    use std::collections::BTreeMap;
-    use std::hash::Hasher;
+    use std::{collections::BTreeMap, hash::Hasher};
 
     let mut files = BTreeMap::new();
     let mut stack: Vec<&include_dir::Dir<'_>> = vec![&ASSETS];
