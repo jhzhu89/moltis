@@ -108,6 +108,8 @@ pub fn build_gateway_app(state: Arc<GatewayState>, methods: Arc<MethodRegistry>)
             .route("/api/gon", get(api_gon_handler))
             .route("/api/skills", get(api_skills_handler))
             .route("/api/skills/search", get(api_skills_search_handler))
+            .route("/api/plugins", get(api_plugins_handler))
+            .route("/api/plugins/search", get(api_plugins_search_handler))
             .route(
                 "/api/images/cached",
                 get(api_cached_images_handler).delete(api_prune_cached_images_handler),
@@ -1607,13 +1609,40 @@ async fn api_bootstrap_handler(State(state): State<AppState>) -> impl IntoRespon
 
 /// Lightweight skills overview: repo summaries + enabled skills only.
 /// Full skill lists are loaded on-demand via /api/skills/search.
-/// Merges both skills and plugins manifests for the UI.
+/// Returns enabled skills from the skills manifest and skill repos.
+#[cfg(feature = "web-ui")]
+fn enabled_from_manifest(
+    path_result: anyhow::Result<std::path::PathBuf>,
+) -> Vec<serde_json::Value> {
+    let Ok(path) = path_result else {
+        return Vec::new();
+    };
+    let store = moltis_skills::manifest::ManifestStore::new(path);
+    store
+        .load()
+        .map(|m| {
+            m.repos
+                .iter()
+                .flat_map(|repo| {
+                    let source = repo.source.clone();
+                    repo.skills.iter().filter(|s| s.enabled).map(move |s| {
+                        serde_json::json!({
+                            "name": s.name,
+                            "source": source,
+                            "enabled": true,
+                        })
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Skills endpoint: repos and enabled skills from the skills manifest only.
 #[cfg(feature = "web-ui")]
 async fn api_skills_handler(State(state): State<AppState>) -> impl IntoResponse {
-    let gw = &state.gateway;
-
-    // Skill repos
-    let skill_repos = gw
+    let repos = state
+        .gateway
         .services
         .skills
         .repos_list()
@@ -1622,8 +1651,16 @@ async fn api_skills_handler(State(state): State<AppState>) -> impl IntoResponse 
         .and_then(|v| v.as_array().cloned())
         .unwrap_or_default();
 
-    // Plugin repos
-    let plugin_repos = gw
+    let skills = enabled_from_manifest(moltis_skills::manifest::ManifestStore::default_path());
+
+    Json(serde_json::json!({ "skills": skills, "repos": repos }))
+}
+
+/// Plugins endpoint: repos and enabled skills from the plugins manifest only.
+#[cfg(feature = "web-ui")]
+async fn api_plugins_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let repos = state
+        .gateway
         .services
         .plugins
         .repos_list()
@@ -1632,98 +1669,21 @@ async fn api_skills_handler(State(state): State<AppState>) -> impl IntoResponse 
         .and_then(|v| v.as_array().cloned())
         .unwrap_or_default();
 
-    let mut all_repos = skill_repos;
-    all_repos.extend(plugin_repos);
+    let skills =
+        enabled_from_manifest(moltis_plugins::install::default_manifest_path());
 
-    // Enabled skills from skills manifest
-    let mut enabled_skills: Vec<serde_json::Value> =
-        if let Ok(path) = moltis_skills::manifest::ManifestStore::default_path() {
-            let store = moltis_skills::manifest::ManifestStore::new(path);
-            store
-                .load()
-                .map(|m| {
-                    m.repos
-                        .iter()
-                        .flat_map(|repo| {
-                            let source = repo.source.clone();
-                            repo.skills.iter().filter(|s| s.enabled).map(move |s| {
-                                serde_json::json!({
-                                    "name": s.name,
-                                    "source": source,
-                                    "kind": "skill",
-                                    "enabled": true,
-                                })
-                            })
-                        })
-                        .collect()
-                })
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-
-    // Enabled skills from plugins manifest
-    if let Ok(path) = moltis_plugins::install::default_manifest_path() {
-        let store = moltis_skills::manifest::ManifestStore::new(path);
-        if let Ok(m) = store.load() {
-            for repo in &m.repos {
-                let source = repo.source.clone();
-                for s in &repo.skills {
-                    if s.enabled {
-                        enabled_skills.push(serde_json::json!({
-                            "name": s.name,
-                            "source": source,
-                            "kind": "plugin",
-                            "enabled": true,
-                        }));
-                    }
-                }
-            }
-        }
-    }
-
-    Json(serde_json::json!({
-        "skills": enabled_skills,
-        "repos": all_repos,
-    }))
+    Json(serde_json::json!({ "skills": skills, "repos": repos }))
 }
 
 /// Search skills within a specific repo. Query params: source, q (optional).
-/// If q is empty, returns all skills for the repo. Searches both skills and plugins.
 #[cfg(feature = "web-ui")]
-async fn api_skills_search_handler(
-    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
-    State(state): State<AppState>,
-) -> impl IntoResponse {
-    let source = params.get("source").cloned().unwrap_or_default();
-    let query = params.get("q").cloned().unwrap_or_default().to_lowercase();
-
-    let gw = &state.gateway;
-
-    // Search skills repos first.
-    let skill_repos = gw
-        .services
-        .skills
-        .repos_list_full()
-        .await
-        .ok()
-        .and_then(|v| v.as_array().cloned())
-        .unwrap_or_default();
-
-    // Search plugins repos.
-    let plugin_repos = gw
-        .services
-        .plugins
-        .repos_list_full()
-        .await
-        .ok()
-        .and_then(|v| v.as_array().cloned())
-        .unwrap_or_default();
-
-    let mut all_repos = skill_repos;
-    all_repos.extend(plugin_repos);
-
-    let skills: Vec<serde_json::Value> = all_repos
+async fn api_search_handler(
+    repos: Vec<serde_json::Value>,
+    source: &str,
+    query: &str,
+) -> Json<serde_json::Value> {
+    let query = query.to_lowercase();
+    let skills: Vec<serde_json::Value> = repos
         .into_iter()
         .find(|repo| {
             repo.get("source")
@@ -1759,6 +1719,44 @@ async fn api_skills_search_handler(
         .collect();
 
     Json(serde_json::json!({ "skills": skills }))
+}
+
+#[cfg(feature = "web-ui")]
+async fn api_skills_search_handler(
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let source = params.get("source").cloned().unwrap_or_default();
+    let query = params.get("q").cloned().unwrap_or_default();
+    let repos = state
+        .gateway
+        .services
+        .skills
+        .repos_list_full()
+        .await
+        .ok()
+        .and_then(|v| v.as_array().cloned())
+        .unwrap_or_default();
+    api_search_handler(repos, &source, &query).await
+}
+
+#[cfg(feature = "web-ui")]
+async fn api_plugins_search_handler(
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let source = params.get("source").cloned().unwrap_or_default();
+    let query = params.get("q").cloned().unwrap_or_default();
+    let repos = state
+        .gateway
+        .services
+        .plugins
+        .repos_list_full()
+        .await
+        .ok()
+        .and_then(|v| v.as_array().cloned())
+        .unwrap_or_default();
+    api_search_handler(repos, &source, &query).await
 }
 
 /// List cached tool images.

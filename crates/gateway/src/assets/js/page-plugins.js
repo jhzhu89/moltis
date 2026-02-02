@@ -12,7 +12,7 @@ import * as S from "./state.js";
 
 // ── Signals ─────────────────────────────────────────────────
 var repos = signal([]);
-var enabledSkills = signal([]);
+var enabledPlugins = signal([]);
 var loading = signal(false);
 var toasts = signal([]);
 var toastId = 0;
@@ -20,10 +20,10 @@ var toastId = 0;
 var prefetchPromise = null;
 function ensurePrefetch() {
 	if (!prefetchPromise) {
-		prefetchPromise = fetch("/api/skills")
+		prefetchPromise = fetch("/api/plugins")
 			.then((r) => r.json())
 			.then((data) => {
-				if (data.skills) enabledSkills.value = data.skills;
+				if (data.skills) enabledPlugins.value = data.skills;
 				if (data.repos) repos.value = data.repos;
 				return data;
 			})
@@ -31,17 +31,6 @@ function ensurePrefetch() {
 	}
 	return prefetchPromise;
 }
-
-// Filter to only plugin-format repos (non-skill)
-var pluginRepos = computed(() => {
-	return repos.value.filter((r) => r.format && r.format !== "skill");
-});
-
-// Enabled plugins only (from plugin-format repos)
-var enabledPlugins = computed(() => {
-	var pluginSources = new Set(pluginRepos.value.map((r) => r.source));
-	return enabledSkills.value.filter((s) => pluginSources.has(s.source));
-});
 
 // ── Helpers ─────────────────────────────────────────────────
 function showToast(message, type) {
@@ -54,10 +43,10 @@ function showToast(message, type) {
 
 function fetchAll() {
 	loading.value = true;
-	fetch("/api/skills")
+	fetch("/api/plugins")
 		.then((r) => r.json())
 		.then((data) => {
-			if (data.skills) enabledSkills.value = data.skills;
+			if (data.skills) enabledPlugins.value = data.skills;
 			if (data.repos) repos.value = data.repos;
 			loading.value = false;
 		})
@@ -84,7 +73,7 @@ function doInstall(source) {
 }
 
 function searchSkills(source, query) {
-	return fetch(`/api/skills/search?source=${encodeURIComponent(source)}&q=${encodeURIComponent(query)}`)
+	return fetch(`/api/plugins/search?source=${encodeURIComponent(source)}&q=${encodeURIComponent(query)}`)
 		.then((r) => r.json())
 		.then((data) => data.skills || []);
 }
@@ -432,7 +421,7 @@ function RepoCard(props) {
 }
 
 function ReposSection() {
-	var r = pluginRepos.value;
+	var r = repos.value;
 	return html`<div class="skills-section">
     <h3 class="skills-section-title">Installed Plugin Repositories</h3>
     <div class="skills-section">
@@ -506,7 +495,7 @@ function PluginsPage() {
       <${InstallBox} />
       <${FeaturedSection} />
       <${ReposSection} />
-      ${loading.value && pluginRepos.value.length === 0 && html`<div style="padding:24px;text-align:center;color:var(--muted);font-size:.85rem">Loading plugins\u2026</div>`}
+      ${loading.value && repos.value.length === 0 && html`<div style="padding:24px;text-align:center;color:var(--muted);font-size:.85rem">Loading plugins\u2026</div>`}
       <${EnabledPluginsTable} />
     </div>
     <${Toasts} />
