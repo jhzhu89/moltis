@@ -970,6 +970,28 @@ async fn ws_upgrade_handler(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
+    // ── CSWSH protection ────────────────────────────────────────────────
+    // Reject cross-origin WebSocket upgrades.  Browsers always send an
+    // Origin header on cross-origin requests; non-browser clients (CLI,
+    // SDKs) typically omit it — those are allowed through.
+    if let Some(origin) = headers
+        .get(axum::http::header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+    {
+        let host = headers
+            .get(axum::http::header::HOST)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if !is_same_origin(origin, host) {
+            tracing::warn!(origin, host, remote = %addr, "rejected cross-origin WebSocket upgrade");
+            return (
+                axum::http::StatusCode::FORBIDDEN,
+                "cross-origin WebSocket connections are not allowed",
+            )
+                .into_response();
+        }
+    }
+
     let accept_language = headers
         .get(axum::http::header::ACCEPT_LANGUAGE)
         .and_then(|v| v.to_str().ok())
@@ -977,6 +999,54 @@ async fn ws_upgrade_handler(
     ws.on_upgrade(move |socket| {
         handle_connection(socket, state.gateway, state.methods, addr, accept_language)
     })
+    .into_response()
+}
+
+/// Check whether a WebSocket `Origin` header matches the request `Host`.
+///
+/// Extracts the host portion of the origin URL and compares it to the Host
+/// header.  Accepts `localhost`, `127.0.0.1`, and `[::1]` interchangeably
+/// so that `http://localhost:8080` matches a Host of `127.0.0.1:8080`.
+fn is_same_origin(origin: &str, host: &str) -> bool {
+    // Origin is a full URL (e.g. "https://localhost:8080"), Host is just
+    // "host:port" or "host".
+    let origin_host = origin
+        .split("://")
+        .nth(1)
+        .unwrap_or(origin)
+        .split('/')
+        .next()
+        .unwrap_or("");
+
+    fn strip_port(h: &str) -> &str {
+        if h.starts_with('[') {
+            // IPv6: [::1]:port
+            h.rsplit_once("]:")
+                .map_or(h, |(addr, _)| addr)
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+        } else {
+            h.rsplit_once(':').map_or(h, |(addr, _)| addr)
+        }
+    }
+    fn get_port(h: &str) -> Option<&str> {
+        if h.starts_with('[') {
+            h.rsplit_once("]:").map(|(_, p)| p)
+        } else {
+            h.rsplit_once(':').map(|(_, p)| p)
+        }
+    }
+
+    let origin_port = get_port(origin_host);
+    let host_port = get_port(host);
+
+    let oh = strip_port(origin_host);
+    let hh = strip_port(host);
+
+    // Normalise loopback variants so 127.0.0.1 == localhost == ::1.
+    let is_loopback = |h: &str| matches!(h, "localhost" | "127.0.0.1" | "::1");
+
+    (oh == hh || (is_loopback(oh) && is_loopback(hh))) && origin_port == host_port
 }
 
 /// SPA fallback: serve `index.html` for any path not matched by an explicit
@@ -1618,5 +1688,57 @@ fn serve_asset(path: &str, cache_control: &'static str) -> axum::response::Respo
         )
             .into_response(),
         None => (StatusCode::NOT_FOUND, "not found").into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn same_origin_exact_match() {
+        assert!(is_same_origin(
+            "https://example.com:8080",
+            "example.com:8080"
+        ));
+        assert!(is_same_origin(
+            "http://example.com:3000",
+            "example.com:3000"
+        ));
+    }
+
+    #[test]
+    fn same_origin_localhost_variants() {
+        // localhost ↔ 127.0.0.1
+        assert!(is_same_origin("http://localhost:8080", "127.0.0.1:8080"));
+        assert!(is_same_origin("https://127.0.0.1:8080", "localhost:8080"));
+        // localhost ↔ ::1
+        assert!(is_same_origin("http://localhost:8080", "[::1]:8080"));
+        assert!(is_same_origin("http://[::1]:8080", "localhost:8080"));
+        // 127.0.0.1 ↔ ::1
+        assert!(is_same_origin("http://127.0.0.1:8080", "[::1]:8080"));
+    }
+
+    #[test]
+    fn cross_origin_rejected() {
+        // Different host
+        assert!(!is_same_origin("https://attacker.com", "localhost:8080"));
+        assert!(!is_same_origin("https://evil.com:8080", "localhost:8080"));
+        // Different port
+        assert!(!is_same_origin("http://localhost:9999", "localhost:8080"));
+    }
+
+    #[test]
+    fn same_origin_no_port() {
+        assert!(is_same_origin("https://example.com", "example.com"));
+        assert!(is_same_origin("http://localhost", "localhost"));
+        assert!(is_same_origin("http://localhost", "127.0.0.1"));
+    }
+
+    #[test]
+    fn cross_origin_port_mismatch() {
+        // One has port, other doesn't — different origins.
+        assert!(!is_same_origin("http://localhost:8080", "localhost"));
+        assert!(!is_same_origin("http://localhost", "localhost:8080"));
     }
 }
