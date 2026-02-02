@@ -292,10 +292,11 @@ pub async fn run_agent_loop_with_context(
         }
         messages.push(assistant_msg);
 
-        // Execute each tool call.
-        for tc in &response.tool_calls {
-            total_tool_calls += 1;
+        // Execute tool calls concurrently.
+        total_tool_calls += response.tool_calls.len();
 
+        // Emit all ToolCallStart events first (preserves notification order).
+        for tc in &response.tool_calls {
             if let Some(cb) = on_event {
                 cb(RunnerEvent::ToolCallStart {
                     id: tc.id.clone(),
@@ -303,63 +304,65 @@ pub async fn run_agent_loop_with_context(
                     arguments: tc.arguments.clone(),
                 });
             }
-
             info!(tool = %tc.name, id = %tc.id, args = %tc.arguments, "executing tool");
+        }
 
-            let result = if let Some(tool) = tools.get(&tc.name) {
-                // Merge tool_context (e.g. _session_key) into the tool call params.
+        // Build futures for all tool calls.
+        let tool_futures: Vec<_> = response
+            .tool_calls
+            .iter()
+            .map(|tc| {
+                let tool = tools.get(&tc.name);
                 let mut args = tc.arguments.clone();
                 if let Some(ref ctx) = tool_context
-                    && let (Some(args_obj), Some(ctx_obj)) = (args.as_object_mut(), ctx.as_object())
+                    && let (Some(args_obj), Some(ctx_obj)) =
+                        (args.as_object_mut(), ctx.as_object())
                 {
                     for (k, v) in ctx_obj {
                         args_obj.insert(k.clone(), v.clone());
                     }
                 }
-                match tool.execute(args).await {
-                    Ok(val) => {
-                        info!(tool = %tc.name, id = %tc.id, "tool execution succeeded");
-                        trace!(tool = %tc.name, result = %val, "tool result");
-                        if let Some(cb) = on_event {
-                            cb(RunnerEvent::ToolCallEnd {
-                                id: tc.id.clone(),
-                                name: tc.name.clone(),
-                                success: true,
-                                error: None,
-                                result: Some(val.clone()),
-                            });
+                async move {
+                    if let Some(tool) = tool {
+                        match tool.execute(args).await {
+                            Ok(val) => (true, serde_json::json!({ "result": val }), None),
+                            Err(e) => {
+                                (false, serde_json::json!({ "error": e.to_string() }), Some(e.to_string()))
+                            }
                         }
-                        serde_json::json!({ "result": val })
-                    },
-                    Err(e) => {
-                        let err_str = e.to_string();
-                        warn!(tool = %tc.name, id = %tc.id, error = %err_str, "tool execution failed");
-                        if let Some(cb) = on_event {
-                            cb(RunnerEvent::ToolCallEnd {
-                                id: tc.id.clone(),
-                                name: tc.name.clone(),
-                                success: false,
-                                error: Some(err_str.clone()),
-                                result: None,
-                            });
-                        }
-                        serde_json::json!({ "error": err_str })
-                    },
+                    } else {
+                        let err_str = format!("unknown tool: {}", tc.name);
+                        (false, serde_json::json!({ "error": err_str }), Some(err_str))
+                    }
                 }
+            })
+            .collect();
+
+        // Execute all tools concurrently and collect results in order.
+        let results = futures::future::join_all(tool_futures).await;
+
+        // Process results in original order: emit events, append messages.
+        for (tc, (success, result, error)) in response.tool_calls.iter().zip(results) {
+            if success {
+                info!(tool = %tc.name, id = %tc.id, "tool execution succeeded");
+                trace!(tool = %tc.name, result = %result, "tool result");
             } else {
-                let err_str = format!("unknown tool: {}", tc.name);
-                warn!(tool = %tc.name, id = %tc.id, "unknown tool requested by LLM");
-                if let Some(cb) = on_event {
-                    cb(RunnerEvent::ToolCallEnd {
-                        id: tc.id.clone(),
-                        name: tc.name.clone(),
-                        success: false,
-                        error: Some(err_str.clone()),
-                        result: None,
-                    });
-                }
-                serde_json::json!({ "error": err_str })
-            };
+                warn!(tool = %tc.name, id = %tc.id, error = %error.as_deref().unwrap_or(""), "tool execution failed");
+            }
+
+            if let Some(cb) = on_event {
+                cb(RunnerEvent::ToolCallEnd {
+                    id: tc.id.clone(),
+                    name: tc.name.clone(),
+                    success,
+                    error,
+                    result: if success {
+                        result.get("result").cloned()
+                    } else {
+                        None
+                    },
+                });
+            }
 
             let tool_result_str = result.to_string();
             debug!(
@@ -848,6 +851,315 @@ mod tests {
         assert!(
             evts.iter()
                 .any(|e| matches!(e, RunnerEvent::ToolCallEnd { success: true, .. }))
+        );
+    }
+
+    // ── Parallel tool execution tests ────────────────────────────────
+
+    /// A tool that sleeps then returns its name.
+    struct SlowTool {
+        tool_name: String,
+        delay_ms: u64,
+    }
+
+    #[async_trait]
+    impl crate::tool_registry::AgentTool for SlowTool {
+        fn name(&self) -> &str {
+            &self.tool_name
+        }
+
+        fn description(&self) -> &str {
+            "Slow tool for testing"
+        }
+
+        fn parameters_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+
+        async fn execute(&self, _params: serde_json::Value) -> Result<serde_json::Value> {
+            tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
+            Ok(serde_json::json!({ "tool": self.tool_name }))
+        }
+    }
+
+    /// A tool that always fails.
+    struct FailTool;
+
+    #[async_trait]
+    impl crate::tool_registry::AgentTool for FailTool {
+        fn name(&self) -> &str {
+            "fail_tool"
+        }
+
+        fn description(&self) -> &str {
+            "Always fails"
+        }
+
+        fn parameters_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+
+        async fn execute(&self, _params: serde_json::Value) -> Result<serde_json::Value> {
+            anyhow::bail!("intentional failure")
+        }
+    }
+
+    /// Mock provider returning N tool calls on the first call, then text.
+    struct MultiToolProvider {
+        call_count: std::sync::atomic::AtomicUsize,
+        tool_calls: Vec<ToolCall>,
+    }
+
+    #[async_trait]
+    impl LlmProvider for MultiToolProvider {
+        fn name(&self) -> &str {
+            "mock"
+        }
+
+        fn id(&self) -> &str {
+            "mock-model"
+        }
+
+        fn supports_tools(&self) -> bool {
+            true
+        }
+
+        async fn complete(
+            &self,
+            _messages: &[serde_json::Value],
+            _tools: &[serde_json::Value],
+        ) -> Result<CompletionResponse> {
+            let count = self
+                .call_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if count == 0 {
+                Ok(CompletionResponse {
+                    text: None,
+                    tool_calls: self.tool_calls.clone(),
+                    usage: Usage {
+                        input_tokens: 10,
+                        output_tokens: 5,
+                    },
+                })
+            } else {
+                Ok(CompletionResponse {
+                    text: Some("All done".into()),
+                    tool_calls: vec![],
+                    usage: Usage {
+                        input_tokens: 20,
+                        output_tokens: 10,
+                    },
+                })
+            }
+        }
+
+        fn stream(
+            &self,
+            _messages: Vec<serde_json::Value>,
+        ) -> Pin<Box<dyn Stream<Item = StreamEvent> + Send + '_>> {
+            Box::pin(tokio_stream::empty())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_parallel_tool_execution() {
+        let provider = Arc::new(MultiToolProvider {
+            call_count: std::sync::atomic::AtomicUsize::new(0),
+            tool_calls: vec![
+                ToolCall {
+                    id: "c1".into(),
+                    name: "tool_a".into(),
+                    arguments: serde_json::json!({}),
+                },
+                ToolCall {
+                    id: "c2".into(),
+                    name: "tool_b".into(),
+                    arguments: serde_json::json!({}),
+                },
+                ToolCall {
+                    id: "c3".into(),
+                    name: "tool_c".into(),
+                    arguments: serde_json::json!({}),
+                },
+            ],
+        });
+
+        let mut tools = ToolRegistry::new();
+        tools.register(Box::new(SlowTool {
+            tool_name: "tool_a".into(),
+            delay_ms: 0,
+        }));
+        tools.register(Box::new(SlowTool {
+            tool_name: "tool_b".into(),
+            delay_ms: 0,
+        }));
+        tools.register(Box::new(SlowTool {
+            tool_name: "tool_c".into(),
+            delay_ms: 0,
+        }));
+
+        let events: Arc<std::sync::Mutex<Vec<RunnerEvent>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let events_clone = Arc::clone(&events);
+        let on_event: OnEvent = Box::new(move |event| {
+            events_clone.lock().unwrap().push(event);
+        });
+
+        let result = run_agent_loop(
+            provider,
+            &tools,
+            "Test bot",
+            "Use all tools",
+            Some(&on_event),
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.text, "All done");
+        assert_eq!(result.tool_calls_made, 3);
+
+        // Verify all 3 ToolCallStart events come before any ToolCallEnd events.
+        let evts = events.lock().unwrap();
+        let starts: Vec<_> = evts
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| matches!(e, RunnerEvent::ToolCallStart { .. }))
+            .map(|(i, _)| i)
+            .collect();
+        let ends: Vec<_> = evts
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| matches!(e, RunnerEvent::ToolCallEnd { .. }))
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(starts.len(), 3);
+        assert_eq!(ends.len(), 3);
+        assert!(
+            starts.iter().all(|s| ends.iter().all(|e| s < e)),
+            "all starts should precede all ends"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_parallel_tool_one_fails() {
+        let provider = Arc::new(MultiToolProvider {
+            call_count: std::sync::atomic::AtomicUsize::new(0),
+            tool_calls: vec![
+                ToolCall {
+                    id: "c1".into(),
+                    name: "tool_a".into(),
+                    arguments: serde_json::json!({}),
+                },
+                ToolCall {
+                    id: "c2".into(),
+                    name: "fail_tool".into(),
+                    arguments: serde_json::json!({}),
+                },
+                ToolCall {
+                    id: "c3".into(),
+                    name: "tool_c".into(),
+                    arguments: serde_json::json!({}),
+                },
+            ],
+        });
+
+        let mut tools = ToolRegistry::new();
+        tools.register(Box::new(SlowTool {
+            tool_name: "tool_a".into(),
+            delay_ms: 0,
+        }));
+        tools.register(Box::new(FailTool));
+        tools.register(Box::new(SlowTool {
+            tool_name: "tool_c".into(),
+            delay_ms: 0,
+        }));
+
+        let events: Arc<std::sync::Mutex<Vec<RunnerEvent>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let events_clone = Arc::clone(&events);
+        let on_event: OnEvent = Box::new(move |event| {
+            events_clone.lock().unwrap().push(event);
+        });
+
+        let result = run_agent_loop(
+            provider,
+            &tools,
+            "Test bot",
+            "Use all tools",
+            Some(&on_event),
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.text, "All done");
+        assert_eq!(result.tool_calls_made, 3);
+
+        // Verify: 2 successes, 1 failure.
+        let evts = events.lock().unwrap();
+        let successes = evts
+            .iter()
+            .filter(|e| matches!(e, RunnerEvent::ToolCallEnd { success: true, .. }))
+            .count();
+        let failures = evts
+            .iter()
+            .filter(|e| matches!(e, RunnerEvent::ToolCallEnd { success: false, .. }))
+            .count();
+        assert_eq!(successes, 2);
+        assert_eq!(failures, 1);
+    }
+
+    #[tokio::test]
+    async fn test_parallel_execution_is_concurrent() {
+        let provider = Arc::new(MultiToolProvider {
+            call_count: std::sync::atomic::AtomicUsize::new(0),
+            tool_calls: vec![
+                ToolCall {
+                    id: "c1".into(),
+                    name: "slow_a".into(),
+                    arguments: serde_json::json!({}),
+                },
+                ToolCall {
+                    id: "c2".into(),
+                    name: "slow_b".into(),
+                    arguments: serde_json::json!({}),
+                },
+                ToolCall {
+                    id: "c3".into(),
+                    name: "slow_c".into(),
+                    arguments: serde_json::json!({}),
+                },
+            ],
+        });
+
+        let mut tools = ToolRegistry::new();
+        tools.register(Box::new(SlowTool {
+            tool_name: "slow_a".into(),
+            delay_ms: 100,
+        }));
+        tools.register(Box::new(SlowTool {
+            tool_name: "slow_b".into(),
+            delay_ms: 100,
+        }));
+        tools.register(Box::new(SlowTool {
+            tool_name: "slow_c".into(),
+            delay_ms: 100,
+        }));
+
+        let start = std::time::Instant::now();
+        let result = run_agent_loop(provider, &tools, "Test bot", "Use all tools", None, None)
+            .await
+            .unwrap();
+        let elapsed = start.elapsed();
+
+        assert_eq!(result.text, "All done");
+        assert_eq!(result.tool_calls_made, 3);
+        // If sequential, would take ≥300ms. Parallel should be ~100ms.
+        assert!(
+            elapsed < std::time::Duration::from_millis(250),
+            "parallel execution took {:?}, expected < 250ms",
+            elapsed
         );
     }
 }
