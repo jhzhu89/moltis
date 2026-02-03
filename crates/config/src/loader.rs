@@ -450,10 +450,7 @@ mod tests {
         let vars = vec![
             ("MOLTIS_AUTH__DISABLED".into(), "true".into()),
             ("MOLTIS_TOOLS__AGENT_TIMEOUT_SECS".into(), "300".into()),
-            (
-                "MOLTIS_TAILSCALE__MODE".into(),
-                "funnel".into(),
-            ),
+            ("MOLTIS_TAILSCALE__MODE".into(), "funnel".into()),
         ];
         let config = apply_env_overrides_with(MoltisConfig::default(), vars.into_iter());
         assert!(config.auth.disabled);
