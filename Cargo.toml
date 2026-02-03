@@ -46,6 +46,8 @@ serde_json = "1"
 # Error handling
 anyhow    = "1"
 thiserror = "2"
+# OpenSSL (vendored for cross-compilation)
+openssl = { features = ["vendored"], version = "0.10" }
 # Logging
 opentelemetry         = { version = "0.29" }
 opentelemetry-otlp    = { features = ["tonic"], version = "0.29" }
