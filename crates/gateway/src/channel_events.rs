@@ -277,19 +277,14 @@ impl ChannelEventSink for GatewayChannelEventSink {
             channel_type,
             account_id,
             reason,
-            "auto-disabling channel: detected bot already running on another instance"
+            "stopping local polling: detected bot already running on another instance"
         );
 
         if let Some(state) = self.state.get() {
-            // Remove the channel (stops the account and deletes from store).
-            let params = serde_json::json!({ "account_id": account_id });
-            if let Err(e) = state.services.channel.remove(params).await {
-                error!(
-                    account_id,
-                    error = %e,
-                    "failed to remove channel during auto-disable"
-                );
-            }
+            // Note: We intentionally do NOT remove the channel from the database.
+            // The channel config should remain persisted so other moltis instances
+            // sharing the same database can still use it. The polling loop will
+            // cancel itself after this call returns.
 
             // Broadcast an event so the UI can update.
             let event = ChannelEvent::AccountDisabled {
