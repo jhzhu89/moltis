@@ -45,11 +45,6 @@ impl GgufRuntimeSupport {
             has_vulkan,
         }
     }
-
-    #[must_use]
-    pub fn has_gpu(&self) -> bool {
-        !self.devices.is_empty()
-    }
 }
 
 /// Detect GGUF runtime devices and summarize available acceleration backends.
@@ -118,7 +113,7 @@ mod tests {
         assert!(support.has_metal);
         assert!(support.has_cuda);
         assert!(support.has_vulkan);
-        assert!(support.has_gpu());
+        assert!(!support.devices.is_empty());
     }
 
     #[test]
@@ -133,7 +128,7 @@ mod tests {
         }]);
 
         assert!(support.has_vulkan);
-        assert!(support.has_gpu());
+        assert!(!support.devices.is_empty());
     }
 
     #[test]
@@ -150,6 +145,6 @@ mod tests {
         assert!(!support.has_metal);
         assert!(!support.has_cuda);
         assert!(!support.has_vulkan);
-        assert!(support.has_gpu());
+        assert!(!support.devices.is_empty());
     }
 }
