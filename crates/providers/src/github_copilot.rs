@@ -35,8 +35,7 @@ const GITHUB_CLIENT_ID: &str = "Iv1.b507a08c87ecfe98";
 const GITHUB_DEVICE_CODE_URL: &str = "https://github.com/login/device/code";
 const GITHUB_TOKEN_URL: &str = "https://github.com/login/oauth/access_token";
 const COPILOT_TOKEN_URL: &str = "https://api.github.com/copilot_internal/v2/token";
-const COPILOT_API_BASE: &str = "https://api.individual.githubcopilot.com";
-const COPILOT_MODELS_ENDPOINT: &str = "https://api.individual.githubcopilot.com/models";
+const COPILOT_API_BASE_FALLBACK: &str = "https://api.individual.githubcopilot.com";
 
 const PROVIDER_NAME: &str = "github-copilot";
 
@@ -65,6 +64,23 @@ struct GithubTokenResponse {
 struct CopilotTokenResponse {
     token: String,
     expires_at: u64,
+    #[serde(default)]
+    endpoints: Option<CopilotEndpoints>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct CopilotEndpoints {
+    api: Option<String>,
+}
+
+impl CopilotTokenResponse {
+    fn api_base(&self) -> String {
+        self.endpoints
+            .as_ref()
+            .and_then(|e| e.api.as_deref())
+            .map(|s| s.trim_end_matches('/').to_string())
+            .unwrap_or_else(|| COPILOT_API_BASE_FALLBACK.to_string())
+    }
 }
 
 // ── Provider ─────────────────────────────────────────────────────────────────
@@ -141,8 +157,7 @@ impl GitHubCopilotProvider {
         }
     }
 
-    /// Get a valid Copilot API token, exchanging the GitHub token if needed.
-    async fn get_valid_copilot_token(&self) -> anyhow::Result<String> {
+    async fn get_valid_copilot_token(&self) -> anyhow::Result<(String, String)> {
         fetch_valid_copilot_token_with_fallback(self.client, &self.token_store).await
     }
 }
@@ -201,7 +216,7 @@ pub const COPILOT_MODELS: &[(&str, &str)] = &[
 async fn fetch_valid_copilot_token(
     client: &reqwest::Client,
     token_store: &TokenStore,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<(String, String)> {
     let tokens = token_store.load(PROVIDER_NAME).ok_or_else(|| {
         anyhow::anyhow!("not logged in to github-copilot — run OAuth device flow first")
     })?;
@@ -216,7 +231,10 @@ async fn fetch_valid_copilot_token(
             .unwrap_or_default()
             .as_secs();
         if now + 60 < expires_at {
-            return Ok(copilot_tokens.access_token.expose_secret().clone());
+            let api_base = copilot_tokens
+                .account_id
+                .unwrap_or_else(|| COPILOT_API_BASE_FALLBACK.to_string());
+            return Ok((copilot_tokens.access_token.expose_secret().clone(), api_base));
         }
     }
 
@@ -240,21 +258,24 @@ async fn fetch_valid_copilot_token(
     }
 
     let copilot_resp: CopilotTokenResponse = resp.json().await?;
+    let api_base = copilot_resp.api_base();
+    debug!(api_base = %api_base, "copilot token exchange resolved API base");
+
     let _ = token_store.save("github-copilot-api", &OAuthTokens {
         access_token: Secret::new(copilot_resp.token.clone()),
         refresh_token: None,
         id_token: None,
-        account_id: None,
+        account_id: Some(api_base.clone()),
         expires_at: Some(copilot_resp.expires_at),
     });
 
-    Ok(copilot_resp.token)
+    Ok((copilot_resp.token, api_base))
 }
 
 async fn fetch_valid_copilot_token_with_fallback(
     client: &reqwest::Client,
     primary_store: &TokenStore,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<(String, String)> {
     let Some(token_store) = token_store_with_provider_tokens(primary_store) else {
         anyhow::bail!("not logged in to github-copilot — run OAuth device flow first");
     };
@@ -365,9 +386,10 @@ fn parse_models_payload(value: &serde_json::Value) -> Vec<super::DiscoveredModel
 async fn fetch_models_from_api(
     client: &reqwest::Client,
     access_token: String,
+    api_base: &str,
 ) -> anyhow::Result<Vec<super::DiscoveredModel>> {
     let response = client
-        .get(COPILOT_MODELS_ENDPOINT)
+        .get(format!("{api_base}/models"))
         .header("Authorization", format!("Bearer {access_token}"))
         .header("Accept", "application/json")
         .header("Editor-Version", EDITOR_VERSION)
@@ -402,9 +424,9 @@ pub fn start_model_discovery() -> mpsc::Receiver<anyhow::Result<Vec<super::Disco
                         .timeout(Duration::from_secs(8))
                         .build()?;
                     let token_store = TokenStore::new();
-                    let access_token =
+                    let (access_token, api_base) =
                         fetch_valid_copilot_token_with_fallback(&client, &token_store).await?;
-                    fetch_models_from_api(&client, access_token).await
+                    fetch_models_from_api(&client, access_token, &api_base).await
                 })
             });
         let _ = tx.send(result);
@@ -487,7 +509,7 @@ impl LlmProvider for GitHubCopilotProvider {
             return self.complete_responses(messages, tools).await;
         }
 
-        let token = self.get_valid_copilot_token().await?;
+        let (token, api_base) = self.get_valid_copilot_token().await?;
 
         let openai_messages: Vec<serde_json::Value> =
             messages.iter().map(ChatMessage::to_openai_value).collect();
@@ -510,7 +532,7 @@ impl LlmProvider for GitHubCopilotProvider {
 
         let http_resp = self
             .client
-            .post(format!("{COPILOT_API_BASE}/chat/completions"))
+            .post(format!("{api_base}/chat/completions"))
             .header("Authorization", format!("Bearer {token}"))
             .header("content-type", "application/json")
             .header("Editor-Version", EDITOR_VERSION)
@@ -590,7 +612,7 @@ impl GitHubCopilotProvider {
         messages: &[ChatMessage],
         tools: &[serde_json::Value],
     ) -> anyhow::Result<CompletionResponse> {
-        let token = self.get_valid_copilot_token().await?;
+        let (token, api_base) = self.get_valid_copilot_token().await?;
 
         let (instructions, input) = split_responses_instructions_and_input(messages.to_vec());
 
@@ -616,7 +638,7 @@ impl GitHubCopilotProvider {
 
         let http_resp = self
             .client
-            .post(format!("{COPILOT_API_BASE}/responses"))
+            .post(format!("{api_base}/responses"))
             .header("Authorization", format!("Bearer {token}"))
             .header("content-type", "application/json")
             .header("Editor-Version", EDITOR_VERSION)
@@ -652,7 +674,7 @@ impl GitHubCopilotProvider {
         tools: Vec<serde_json::Value>,
     ) -> Pin<Box<dyn Stream<Item = StreamEvent> + Send + '_>> {
         Box::pin(async_stream::stream! {
-            let token = match self.get_valid_copilot_token().await {
+            let (token, api_base) = match self.get_valid_copilot_token().await {
                 Ok(t) => t,
                 Err(e) => {
                     yield StreamEvent::Error(e.to_string());
@@ -685,7 +707,7 @@ impl GitHubCopilotProvider {
 
             let resp = match self
                 .client
-                .post(format!("{COPILOT_API_BASE}/responses"))
+                .post(format!("{api_base}/responses"))
                 .header("Authorization", format!("Bearer {token}"))
                 .header("content-type", "application/json")
                 .header("Editor-Version", EDITOR_VERSION)
@@ -796,7 +818,7 @@ impl GitHubCopilotProvider {
         tools: Vec<serde_json::Value>,
     ) -> Pin<Box<dyn Stream<Item = StreamEvent> + Send + '_>> {
         Box::pin(async_stream::stream! {
-            let token = match self.get_valid_copilot_token().await {
+            let (token, api_base) = match self.get_valid_copilot_token().await {
                 Ok(t) => t,
                 Err(e) => {
                     yield StreamEvent::Error(e.to_string());
@@ -827,7 +849,7 @@ impl GitHubCopilotProvider {
 
             let resp = match self
                 .client
-                .post(format!("{COPILOT_API_BASE}/chat/completions"))
+                .post(format!("{api_base}/chat/completions"))
                 .header("Authorization", format!("Bearer {token}"))
                 .header("content-type", "application/json")
                 .header("Editor-Version", EDITOR_VERSION)
@@ -1210,7 +1232,10 @@ mod tests {
 
     #[test]
     fn constants_are_correct() {
-        assert_eq!(COPILOT_API_BASE, "https://api.individual.githubcopilot.com");
+        assert_eq!(
+            COPILOT_API_BASE_FALLBACK,
+            "https://api.individual.githubcopilot.com"
+        );
         assert_eq!(EDITOR_VERSION, "vscode/1.96.2");
         assert!(!COPILOT_USER_AGENT.is_empty());
         assert_eq!(PROVIDER_NAME, "github-copilot");
@@ -1587,5 +1612,67 @@ mod tests {
         assert!(ids.contains(&"gpt-5.4"), "missing gpt-5.4");
         assert!(ids.contains(&"gpt-5.4-pro"), "missing gpt-5.4-pro");
         assert!(ids.contains(&"gpt-5.2-pro"), "missing gpt-5.2-pro");
+    }
+
+    // ── CopilotTokenResponse endpoint parsing ────────────────────────────────
+
+    #[test]
+    fn api_base_uses_individual_fallback_when_endpoints_absent() {
+        let resp: CopilotTokenResponse = serde_json::from_value(serde_json::json!({
+            "token": "tok",
+            "expires_at": 9999999999_u64,
+        }))
+        .unwrap();
+        assert_eq!(resp.api_base(), COPILOT_API_BASE_FALLBACK);
+    }
+
+    #[test]
+    fn api_base_uses_individual_fallback_when_api_field_null() {
+        let resp: CopilotTokenResponse = serde_json::from_value(serde_json::json!({
+            "token": "tok",
+            "expires_at": 9999999999_u64,
+            "endpoints": {}
+        }))
+        .unwrap();
+        assert_eq!(resp.api_base(), COPILOT_API_BASE_FALLBACK);
+    }
+
+    #[test]
+    fn api_base_returns_business_endpoint() {
+        let resp: CopilotTokenResponse = serde_json::from_value(serde_json::json!({
+            "token": "tok",
+            "expires_at": 9999999999_u64,
+            "endpoints": {
+                "api": "https://api.business.githubcopilot.com"
+            }
+        }))
+        .unwrap();
+        assert_eq!(resp.api_base(), "https://api.business.githubcopilot.com");
+    }
+
+    #[test]
+    fn api_base_returns_enterprise_endpoint() {
+        let resp: CopilotTokenResponse = serde_json::from_value(serde_json::json!({
+            "token": "tok",
+            "expires_at": 9999999999_u64,
+            "endpoints": {
+                "api": "https://api.enterprise.githubcopilot.com"
+            }
+        }))
+        .unwrap();
+        assert_eq!(resp.api_base(), "https://api.enterprise.githubcopilot.com");
+    }
+
+    #[test]
+    fn api_base_strips_trailing_slash() {
+        let resp: CopilotTokenResponse = serde_json::from_value(serde_json::json!({
+            "token": "tok",
+            "expires_at": 9999999999_u64,
+            "endpoints": {
+                "api": "https://api.business.githubcopilot.com/"
+            }
+        }))
+        .unwrap();
+        assert_eq!(resp.api_base(), "https://api.business.githubcopilot.com");
     }
 }
