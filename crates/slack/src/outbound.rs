@@ -567,14 +567,27 @@ impl ChannelOutbound for SlackOutbound {
                         "text": { "type": "plain_text", "text": btn.label },
                         "action_id": btn.callback_data,
                     });
-                    match btn.style {
-                        ButtonStyle::Primary => {
-                            button["style"] = serde_json::json!("primary");
-                        },
-                        ButtonStyle::Danger => {
-                            button["style"] = serde_json::json!("danger");
-                        },
-                        ButtonStyle::Default => {},
+                    if let Some(style) = match btn.style {
+                        ButtonStyle::Primary => Some("primary"),
+                        ButtonStyle::Danger => Some("danger"),
+                        ButtonStyle::Default => None,
+                    } {
+                        button["style"] = serde_json::json!(style);
+                    }
+                    if let Some(ref value) = btn.value {
+                        button["value"] = serde_json::json!(value);
+                    }
+                    if let Some(ref confirm) = btn.confirm {
+                        let mut confirm_obj = serde_json::json!({
+                            "title": { "type": "plain_text", "text": confirm.title },
+                            "text": { "type": "mrkdwn", "text": confirm.text },
+                            "confirm": { "type": "plain_text", "text": confirm.confirm_label },
+                            "deny": { "type": "plain_text", "text": confirm.deny_label },
+                        });
+                        if confirm.danger {
+                            confirm_obj["style"] = serde_json::json!("danger");
+                        }
+                        button["confirm"] = confirm_obj;
                     }
                     button
                 })
@@ -586,27 +599,42 @@ impl ChannelOutbound for SlackOutbound {
             }));
         }
 
+        // Decide whether to post a new message or update an existing one.
+        let api_method = if message.replace_message_id.is_some() {
+            "chat.update"
+        } else {
+            "chat.postMessage"
+        };
+
         let content = SlackMessageContent::new().with_text(message.text.clone());
 
-        let mut req = SlackApiChatPostMessageRequest::new(channel_id, content);
+        let mut body = if let Some(ref ts) = message.replace_message_id {
+            // chat.update: build a minimal JSON body with the required `ts`.
+            let update_req = SlackApiChatUpdateRequest::new(
+                channel_id,
+                content,
+                ts.as_str().into(),
+            );
+            serde_json::to_value(&update_req)
+                .map_err(|e| ChannelError::unavailable(format!("serialize failed: {e}")))?
+        } else {
+            let mut req = SlackApiChatPostMessageRequest::new(channel_id, content);
+            if let Some(ts) = thread_ts.as_deref() {
+                req = req.with_thread_ts(ts.into());
+            }
+            serde_json::to_value(&req)
+                .map_err(|e| ChannelError::unavailable(format!("serialize failed: {e}")))?
+        };
 
-        if let Some(ts) = thread_ts.as_deref() {
-            req = req.with_thread_ts(ts.into());
-        }
-
-        // Attach blocks via raw JSON since slack-morphism's typed Block Kit
-        // builders don't cover all action element styles easily.
-        let mut body = serde_json::to_value(&req)
-            .map_err(|e| ChannelError::unavailable(format!("serialize failed: {e}")))?;
         body["blocks"] = serde_json::json!(blocks);
 
         // Use the raw post approach.  Fall back to text-only if it fails.
         let raw_resp: serde_json::Value = session
             .http_session_api
-            .http_post("chat.postMessage", &body, None)
+            .http_post(api_method, &body, None)
             .await
             .map_err(|e| {
-                ChannelError::unavailable(format!("chat.postMessage (interactive) failed: {e}"))
+                ChannelError::unavailable(format!("{api_method} (interactive) failed: {e}"))
             })?;
 
         if raw_resp.get("ok") == Some(&serde_json::Value::Bool(false)) {
@@ -615,7 +643,7 @@ impl ChannelOutbound for SlackOutbound {
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown");
             return Err(ChannelError::unavailable(format!(
-                "chat.postMessage (interactive) error: {err}"
+                "{api_method} (interactive) error: {err}"
             )));
         }
 

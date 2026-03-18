@@ -9,12 +9,13 @@ use {
 use {
     moltis_channels::{
         ChannelAttachment, ChannelEvent, ChannelEventSink, ChannelMessageMeta, ChannelReplyTarget,
-        Error as ChannelError, Result as ChannelResult,
+        Error as ChannelError, InteractiveMessage, Result as ChannelResult,
     },
     moltis_sessions::metadata::SqliteSessionMetadata,
 };
 
 use crate::{
+    approval::truncate_command,
     broadcast::{BroadcastOpts, broadcast},
     state::GatewayState,
 };
@@ -125,6 +126,107 @@ pub struct GatewayChannelEventSink {
 impl GatewayChannelEventSink {
     pub fn new(state: Arc<tokio::sync::OnceCell<Arc<GatewayState>>>) -> Self {
         Self { state }
+    }
+
+    /// Handle an exec approval or denial interaction from a channel button click.
+    async fn handle_approval_interaction(
+        &self,
+        action: &str,
+        value: Option<&str>,
+        reply_to: ChannelReplyTarget,
+    ) -> ChannelResult<String> {
+        let state = self
+            .state
+            .get()
+            .ok_or_else(|| ChannelError::unavailable("gateway not ready"))?;
+
+        // Parse the value JSON to extract request_id and command.
+        let value_str = value
+            .ok_or_else(|| ChannelError::invalid_input("approval interaction missing value"))?;
+        let value_json: serde_json::Value = serde_json::from_str(value_str)
+            .map_err(|e| ChannelError::invalid_input(format!("invalid approval value JSON: {e}")))?;
+
+        let request_id = value_json
+            .get("request_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ChannelError::invalid_input("approval value missing request_id"))?;
+        let command = value_json
+            .get("command")
+            .and_then(|v| v.as_str())
+            .unwrap_or("(unknown)");
+
+        let approved = match action {
+            "exec_approve" => true,
+            "exec_deny" => false,
+            _ => {
+                return Err(ChannelError::invalid_input(format!(
+                    "unknown approval action: {action}"
+                )));
+            },
+        };
+
+        let decision = if approved { "approved" } else { "denied" };
+        let emoji = if approved { "✅" } else { "❌" };
+
+        info!(request_id, decision, "resolving exec approval from channel");
+
+        // Build the resolution params — include the command for approvals so
+        // the manager can verify it matches.
+        let mut decision_params = serde_json::json!({
+            "requestId": request_id,
+            "decision": decision,
+        });
+        if approved {
+            decision_params["command"] = serde_json::json!(command);
+        }
+
+        // Resolve the approval via the service.
+        if let Err(e) = state.services.exec_approval.resolve(decision_params).await {
+            warn!(
+                request_id,
+                error = %e,
+                "failed to resolve exec approval from channel"
+            );
+            return Err(ChannelError::unavailable(format!(
+                "failed to resolve approval: {e}"
+            )));
+        }
+
+        // Replace the original approval card with a status message (no buttons).
+        // If message_id is None (unexpected — Slack should always provide it
+        // for block_actions on messages), we still resolved the approval above
+        // but skip the card update to avoid posting a duplicate message.
+        let display_cmd = truncate_command(command);
+        if reply_to.message_id.is_none() {
+            warn!(request_id, "approval resolved but message_id missing — cannot update card");
+            return Ok(format!("Command {decision}"));
+        }
+
+        let updated_message = InteractiveMessage {
+            text: format!("{emoji} Command {decision}\n```{display_cmd}```"),
+            button_rows: vec![],
+            replace_message_id: reply_to.message_id.clone(),
+        };
+
+        if let Some(outbound) = state.services.channel_outbound_arc() {
+            if let Err(e) = outbound
+                .send_interactive(
+                    &reply_to.account_id,
+                    &reply_to.chat_id,
+                    &updated_message,
+                    None,
+                )
+                .await
+            {
+                warn!(
+                    request_id,
+                    error = %e,
+                    "failed to update approval message in channel"
+                );
+            }
+        }
+
+        Ok(format!("Command {decision}"))
     }
 }
 
@@ -582,6 +684,21 @@ impl ChannelEventSink for GatewayChannelEventSink {
         };
 
         self.dispatch_command(&cmd_text, reply_to).await
+    }
+
+    async fn dispatch_interaction_with_value(
+        &self,
+        callback_data: &str,
+        value: Option<&str>,
+        reply_to: ChannelReplyTarget,
+    ) -> ChannelResult<String> {
+        // Handle exec approval/deny actions.
+        if matches!(callback_data, "exec_approve" | "exec_deny") {
+            return self.handle_approval_interaction(callback_data, value, reply_to).await;
+        }
+
+        // Fall through to existing dispatch_interaction for other callbacks.
+        self.dispatch_interaction(callback_data, reply_to).await
     }
 
     async fn update_location(

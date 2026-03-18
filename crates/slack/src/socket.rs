@@ -178,63 +178,75 @@ async fn push_events_callback(
     };
     drop(guard);
 
-    match event.event {
-        SlackEventCallbackBody::Message(msg_event) => {
-            handle_message_event(
-                &listener_state.account_id,
-                msg_event,
-                &listener_state.accounts,
-            )
-            .await;
-        },
-        SlackEventCallbackBody::AppMention(mention_event) => {
-            let channel = mention_event.channel.to_string();
-            let user = mention_event.user.to_string();
-            let text = mention_event.content.text.as_deref().unwrap_or("");
-            let thread_ts = mention_event
-                .origin
-                .thread_ts
-                .as_ref()
-                .map(|ts| ts.to_string());
+    // Spawn event handling in a separate task so this callback returns
+    // immediately.  The slack-morphism reader loop awaits on_message()
+    // callbacks inline — if we block here the reader cannot process
+    // WebSocket Ping frames and Slack will RST the connection with
+    // `ResetWithoutClosingHandshake`.
+    tokio::spawn(async move {
+        match event.event {
+            SlackEventCallbackBody::Message(msg_event) => {
+                handle_message_event(
+                    &listener_state.account_id,
+                    msg_event,
+                    &listener_state.accounts,
+                )
+                .await;
+            },
+            SlackEventCallbackBody::AppMention(mention_event) => {
+                let channel = mention_event.channel.to_string();
+                let user = mention_event.user.to_string();
+                let text = mention_event
+                    .content
+                    .text
+                    .as_deref()
+                    .unwrap_or("")
+                    .to_string();
+                let thread_ts = mention_event
+                    .origin
+                    .thread_ts
+                    .as_ref()
+                    .map(|ts| ts.to_string());
 
-            handle_inbound(
-                &listener_state.account_id,
-                &channel,
-                &user,
-                text,
-                thread_ts,
-                None,
-                true, // is_mention
-                &listener_state.accounts,
-            )
-            .await;
-        },
-        SlackEventCallbackBody::ReactionAdded(reaction_event) => {
-            handle_reaction_event(
-                &listener_state.account_id,
-                reaction_event.user.as_ref(),
-                reaction_event.reaction.as_ref(),
-                &reaction_event.item,
-                true,
-                &listener_state.accounts,
-            )
-            .await;
-        },
-        SlackEventCallbackBody::ReactionRemoved(reaction_event) => {
-            handle_reaction_event(
-                &listener_state.account_id,
-                reaction_event.user.as_ref(),
-                reaction_event.reaction.as_ref(),
-                &reaction_event.item,
-                false,
-                &listener_state.accounts,
-            )
-            .await;
-        },
-        _ => {
-            debug!("unhandled slack push event");
-        },
-    }
+                handle_inbound(
+                    &listener_state.account_id,
+                    &channel,
+                    &user,
+                    &text,
+                    thread_ts,
+                    None,
+                    true, // is_mention
+                    &listener_state.accounts,
+                )
+                .await;
+            },
+            SlackEventCallbackBody::ReactionAdded(reaction_event) => {
+                handle_reaction_event(
+                    &listener_state.account_id,
+                    reaction_event.user.as_ref(),
+                    reaction_event.reaction.as_ref(),
+                    &reaction_event.item,
+                    true,
+                    &listener_state.accounts,
+                )
+                .await;
+            },
+            SlackEventCallbackBody::ReactionRemoved(reaction_event) => {
+                handle_reaction_event(
+                    &listener_state.account_id,
+                    reaction_event.user.as_ref(),
+                    reaction_event.reaction.as_ref(),
+                    &reaction_event.item,
+                    false,
+                    &listener_state.accounts,
+                )
+                .await;
+            },
+            _ => {
+                debug!("unhandled slack push event");
+            },
+        }
+    });
 
     Ok(())
 }
@@ -304,24 +316,24 @@ async fn interaction_events_callback(
     };
     drop(guard);
 
-    // Extract the action_id from block_actions interaction type.
-    let (action_id, channel_id) = match &event {
-        SlackInteractionEvent::BlockActions(ba) => {
-            let action = ba.actions.as_ref().and_then(|a| a.first());
-            let channel = ba.channel.as_ref().map(|c| c.id.to_string());
-            match (action, channel) {
-                (Some(act), Some(ch)) => (act.action_id.to_string(), ch),
-                _ => {
-                    debug!("block_actions missing action or channel");
-                    return Ok(());
-                },
-            }
-        },
-        _ => {
-            debug!("unhandled interaction event type");
-            return Ok(());
-        },
+    // Only handle block_actions (button clicks).
+    let SlackInteractionEvent::BlockActions(ba) = &event else {
+        debug!("unhandled interaction event type");
+        return Ok(());
     };
+
+    let (Some(action), Some(channel)) = (
+        ba.actions.as_ref().and_then(|a| a.first()),
+        ba.channel.as_ref(),
+    ) else {
+        debug!("block_actions missing action or channel");
+        return Ok(());
+    };
+
+    let action_id = action.action_id.to_string();
+    let action_value = action.value.as_ref().map(|v| v.to_string());
+    let channel_id = channel.id.to_string();
+    let message_ts = ba.message.as_ref().map(|m| m.origin.ts.to_string());
 
     let account_id = &listener_state.account_id;
     let event_sink = {
@@ -337,15 +349,17 @@ async fn interaction_events_callback(
             channel_type: ChannelType::Slack,
             account_id: account_id.to_string(),
             chat_id: channel_id,
-            message_id: None,
+            message_id: message_ts,
         };
-        match sink.dispatch_interaction(&action_id, reply_to).await {
-            Ok(_response) => {
-                // Response already sent by the gateway.
-            },
-            Err(e) => {
-                debug!(account_id, action_id, "interaction dispatch failed: {e}");
-            },
+        if let Err(e) = sink
+            .dispatch_interaction_with_value(
+                &action_id,
+                action_value.as_deref(),
+                reply_to,
+            )
+            .await
+        {
+            debug!(account_id, action_id, "interaction dispatch failed: {e}");
         }
     }
 

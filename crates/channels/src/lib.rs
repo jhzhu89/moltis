@@ -23,12 +23,12 @@ pub use {
     config_view::ChannelConfigView,
     error::{Error, Result},
     plugin::{
-        ButtonRow, ButtonStyle, ChannelAttachment, ChannelCapabilities, ChannelDescriptor,
-        ChannelEvent, ChannelEventSink, ChannelHealthSnapshot, ChannelMessageKind,
-        ChannelMessageMeta, ChannelOtpProvider, ChannelOutbound, ChannelPlugin, ChannelReplyTarget,
-        ChannelStatus, ChannelStreamOutbound, ChannelThreadContext, ChannelType, InboundMode,
-        InteractiveButton, InteractiveMessage, StreamEvent, StreamReceiver, StreamSender,
-        ThreadMessage,
+        ButtonConfirm, ButtonRow, ButtonStyle, ChannelAttachment, ChannelCapabilities,
+        ChannelDescriptor, ChannelEvent, ChannelEventSink, ChannelHealthSnapshot,
+        ChannelMessageKind, ChannelMessageMeta, ChannelOtpProvider, ChannelOutbound, ChannelPlugin,
+        ChannelReplyTarget, ChannelStatus, ChannelStreamOutbound, ChannelThreadContext,
+        ChannelType, InboundMode, InteractiveButton, InteractiveMessage, StreamEvent,
+        StreamReceiver, StreamSender, ThreadMessage,
     },
     registry::{ChannelRegistry, RegistryOutboundRouter},
 };

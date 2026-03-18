@@ -2,11 +2,15 @@
 
 use std::sync::Arc;
 
-use {async_trait::async_trait, serde_json::Value, tracing::info};
+use {async_trait::async_trait, serde_json::Value, tracing::{info, warn}};
 
 use moltis_tools::{
     approval::{ApprovalDecision, ApprovalManager},
     exec::ApprovalBroadcaster,
+};
+
+use moltis_channels::plugin::{
+    ButtonConfirm, ButtonStyle, InteractiveButton, InteractiveMessage,
 };
 
 use crate::{
@@ -79,6 +83,24 @@ impl ExecApprovalService for LiveExecApprovalService {
     }
 }
 
+/// Maximum display length for commands in approval cards.
+const APPROVAL_CMD_DISPLAY_LEN: usize = 200;
+
+/// Truncate a command string for display in approval messages.
+///
+/// Slack block elements have character limits, so we cap the preview and
+/// append "…" when truncated.
+pub(crate) fn truncate_command(command: &str) -> String {
+    if command.len() <= APPROVAL_CMD_DISPLAY_LEN {
+        command.to_string()
+    } else {
+        format!(
+            "{}…",
+            &command[..command.floor_char_boundary(APPROVAL_CMD_DISPLAY_LEN)]
+        )
+    }
+}
+
 /// Broadcasts approval requests to connected WebSocket clients.
 pub struct GatewayApprovalBroadcaster {
     state: Arc<GatewayState>,
@@ -88,11 +110,93 @@ impl GatewayApprovalBroadcaster {
     pub fn new(state: Arc<GatewayState>) -> Self {
         Self { state }
     }
+
+    /// Send an interactive approval card to the originating channel, if any.
+    async fn send_channel_approval_card(
+        &self,
+        session_key: &str,
+        request_id: &str,
+        command: &str,
+    ) {
+        let target = match self.state.peek_channel_replies(session_key).await.into_iter().next() {
+            Some(t) => t,
+            None => return,
+        };
+        let outbound = match self.state.services.channel_outbound_arc() {
+            Some(o) => o,
+            None => return,
+        };
+
+        let display_cmd = truncate_command(command);
+
+        // Slack button `value` field is capped at 2000 chars.  The request_id
+        // is sufficient for resolution; include a truncated command only for
+        // the post-resolution status message.
+        let value_cmd = if command.len() > 1800 {
+            &command[..command.floor_char_boundary(1800)]
+        } else {
+            command
+        };
+        let value_json = serde_json::json!({
+            "request_id": request_id,
+            "command": value_cmd,
+        })
+        .to_string();
+
+        let message = InteractiveMessage {
+            text: format!("🔐 *Approval required*\n```{display_cmd}```"),
+            button_rows: vec![vec![
+                InteractiveButton {
+                    label: "✅ Allow".to_string(),
+                    callback_data: "exec_approve".to_string(),
+                    style: ButtonStyle::Primary,
+                    value: Some(value_json.clone()),
+                    confirm: Some(ButtonConfirm {
+                        title: "Allow command?".to_string(),
+                        text: format!("Run: {display_cmd}"),
+                        confirm_label: "Allow".to_string(),
+                        deny_label: "Cancel".to_string(),
+                        danger: false,
+                    }),
+                },
+                InteractiveButton {
+                    label: "❌ Deny".to_string(),
+                    callback_data: "exec_deny".to_string(),
+                    style: ButtonStyle::Danger,
+                    value: Some(value_json),
+                    confirm: None,
+                },
+            ]],
+            replace_message_id: None,
+        };
+
+        if let Err(e) = outbound
+            .send_interactive(
+                &target.account_id,
+                &target.chat_id,
+                &message,
+                target.message_id.as_deref(),
+            )
+            .await
+        {
+            warn!(
+                session_key,
+                error = %e,
+                "failed to send approval card to channel"
+            );
+        }
+    }
 }
 
 #[async_trait]
 impl ApprovalBroadcaster for GatewayApprovalBroadcaster {
-    async fn broadcast_request(&self, request_id: &str, command: &str) -> moltis_tools::Result<()> {
+    async fn broadcast_request(
+        &self,
+        request_id: &str,
+        command: &str,
+        session_key: Option<&str>,
+    ) -> moltis_tools::Result<()> {
+        // 1. Broadcast to WebSocket clients (existing web UI path).
         broadcast(
             &self.state,
             "exec.approval.requested",
@@ -103,6 +207,13 @@ impl ApprovalBroadcaster for GatewayApprovalBroadcaster {
             BroadcastOpts::default(),
         )
         .await;
+
+        // 2. Send interactive approval card to originating channel (if any).
+        if let Some(sk) = session_key {
+            self.send_channel_approval_card(sk, request_id, command)
+                .await;
+        }
+
         Ok(())
     }
 }

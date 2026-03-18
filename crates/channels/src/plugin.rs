@@ -380,6 +380,20 @@ pub trait ChannelEventSink: Send + Sync {
         Err(Error::unavailable("interactions not supported"))
     }
 
+    /// Dispatch a button/menu interaction callback with an optional value payload.
+    ///
+    /// The `value` is the button's value field (e.g. JSON-encoded request
+    /// metadata for exec approval). The default implementation delegates to
+    /// `dispatch_interaction`, ignoring the value.
+    async fn dispatch_interaction_with_value(
+        &self,
+        callback_data: &str,
+        _value: Option<&str>,
+        reply_to: ChannelReplyTarget,
+    ) -> Result<String> {
+        self.dispatch_interaction(callback_data, reply_to).await
+    }
+
     /// Dispatch an inbound message with attachments (images, files) to the chat session.
     ///
     /// This is used when a channel message contains both text and media (e.g., a
@@ -459,6 +473,26 @@ pub struct InteractiveButton {
     pub label: String,
     pub callback_data: String,
     pub style: ButtonStyle,
+    /// Optional value payload sent back with the interaction callback.
+    /// For Slack, this maps to the button `value` field (max 2000 chars).
+    pub value: Option<String>,
+    /// Optional confirmation dialog shown before the action executes.
+    pub confirm: Option<ButtonConfirm>,
+}
+
+/// Confirmation dialog shown before a button action executes.
+#[derive(Debug, Clone)]
+pub struct ButtonConfirm {
+    /// Title of the confirmation dialog.
+    pub title: String,
+    /// Descriptive text shown in the dialog body.
+    pub text: String,
+    /// Label for the confirm button (e.g. "Allow").
+    pub confirm_label: String,
+    /// Label for the deny/cancel button (e.g. "Cancel").
+    pub deny_label: String,
+    /// When true, the confirm button is styled as destructive/danger.
+    pub danger: bool,
 }
 
 /// Visual style for interactive buttons.

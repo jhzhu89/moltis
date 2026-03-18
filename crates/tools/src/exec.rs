@@ -42,7 +42,12 @@ const MAX_SANDBOX_RECOVERY_RETRIES: usize = 1;
 /// Broadcaster that notifies connected clients about pending approval requests.
 #[async_trait]
 pub trait ApprovalBroadcaster: Send + Sync {
-    async fn broadcast_request(&self, request_id: &str, command: &str) -> Result<()>;
+    async fn broadcast_request(
+        &self,
+        request_id: &str,
+        command: &str,
+        session_key: Option<&str>,
+    ) -> Result<()>;
 }
 
 /// Provider of environment variables to inject into sandbox execution.
@@ -523,7 +528,7 @@ impl AgentTool for ExecTool {
 
                 // Broadcast to connected clients.
                 if let Some(ref bc) = self.broadcaster
-                    && let Err(e) = bc.broadcast_request(&req_id, command).await
+                    && let Err(e) = bc.broadcast_request(&req_id, command, session_key).await
                 {
                     warn!(error = %e, "failed to broadcast approval request");
                 }
@@ -832,7 +837,12 @@ mod tests {
 
     #[async_trait]
     impl ApprovalBroadcaster for TestBroadcaster {
-        async fn broadcast_request(&self, _request_id: &str, _command: &str) -> Result<()> {
+        async fn broadcast_request(
+            &self,
+            _request_id: &str,
+            _command: &str,
+            _session_key: Option<&str>,
+        ) -> Result<()> {
             self.called.store(true, Ordering::SeqCst);
             Ok(())
         }
