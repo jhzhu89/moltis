@@ -342,6 +342,11 @@ async fn trust_ca() -> anyhow::Result<()> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Install the rustls crypto provider early, before any TLS client is
+    // created on a worker thread. Without this, reqwest / hyper-rustls may
+    // panic when both `aws-lc-rs` and `ring` features are compiled in.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     dotenvy::dotenv().ok();
     let cli = Cli::parse();
 

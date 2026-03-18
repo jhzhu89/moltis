@@ -331,6 +331,25 @@ impl OpenAiCodexProvider {
     }
 }
 
+/// Extract the `exp` claim from a JWT access token.
+fn extract_jwt_exp(jwt: &str) -> Option<u64> {
+    let parts: Vec<&str> = jwt.split('.').collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    let payload = URL_SAFE_NO_PAD.decode(parts[1]).or_else(|_| {
+        let padded = match parts[1].len() % 4 {
+            2 => format!("{}==", parts[1]),
+            3 => format!("{}=", parts[1]),
+            _ => parts[1].to_string(),
+        };
+        base64::engine::general_purpose::STANDARD.decode(&padded)
+    });
+    let payload = payload.ok()?;
+    let claims: serde_json::Value = serde_json::from_slice(&payload).ok()?;
+    claims.get("exp").and_then(serde_json::Value::as_u64)
+}
+
 /// Parse tokens from Codex CLI auth.json content.
 fn parse_codex_cli_tokens(data: &str) -> Option<moltis_oauth::OAuthTokens> {
     let json: serde_json::Value = serde_json::from_str(data).ok()?;
@@ -348,12 +367,15 @@ fn parse_codex_cli_tokens(data: &str) -> Option<moltis_oauth::OAuthTokens> {
         .get("refresh_token")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
+    // Extract `exp` from the JWT so that the expiry check in
+    // `get_valid_tokens` can trigger a refresh when the token is stale.
+    let expires_at = extract_jwt_exp(&access_token);
     Some(moltis_oauth::OAuthTokens {
         access_token: Secret::new(access_token),
         refresh_token: refresh_token.map(Secret::new),
         id_token: id_token.map(Secret::new),
         account_id,
-        expires_at: None,
+        expires_at,
     })
 }
 

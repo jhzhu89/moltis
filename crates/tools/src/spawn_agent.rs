@@ -113,6 +113,24 @@ impl SpawnAgentTool {
         let Some(raw) = params.get(key) else {
             return Ok(Vec::new());
         };
+        // Some LLM providers send empty arrays/objects as strings or null.
+        // Be lenient: treat null and stringified "[]" / "" as empty.
+        if raw.is_null() {
+            return Ok(Vec::new());
+        }
+        if let Some(s) = raw.as_str() {
+            let trimmed = s.trim();
+            if trimmed.is_empty() || trimmed == "[]" {
+                return Ok(Vec::new());
+            }
+            // Try parsing a JSON array from the string.
+            if let Ok(parsed) = serde_json::from_str::<Vec<String>>(trimmed) {
+                return Ok(parsed);
+            }
+            return Err(Error::message(format!(
+                "parameter '{key}' must be an array, got string: {s}"
+            )));
+        }
         let arr = raw
             .as_array()
             .ok_or_else(|| Error::message(format!("parameter '{key}' must be an array")))?;
