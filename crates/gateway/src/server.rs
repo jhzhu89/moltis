@@ -1155,6 +1155,12 @@ fn spawn_post_listener_warmups(
     browser_service: Arc<dyn crate::services::BrowserService>,
     browser_tool: Option<Arc<dyn moltis_agents::tool_registry::AgentTool>>,
 ) {
+    // Warm the container CLI OnceLock off the async worker threads.
+    tokio::task::spawn_blocking(|| {
+        let cli = moltis_tools::sandbox::container_cli();
+        debug!(cli, "container CLI detected");
+    });
+
     if !env_flag_enabled("MOLTIS_BROWSER_WARMUP") {
         debug!("startup browser warmup disabled (set MOLTIS_BROWSER_WARMUP=1 to enable)");
         return;
@@ -1741,6 +1747,7 @@ pub async fn prepare_gateway(
                         args: entry.args.clone(),
                         env: entry.env.clone(),
                         enabled: entry.enabled,
+                        request_timeout_secs: entry.request_timeout_secs,
                         transport,
                         url: entry.url.clone().map(Secret::new),
                         headers: entry
@@ -1749,6 +1756,7 @@ pub async fn prepare_gateway(
                             .map(|(key, value)| (key.clone(), Secret::new(value.clone())))
                             .collect(),
                         oauth,
+                        display_name: entry.display_name.clone(),
                     });
             }
         }
@@ -1756,6 +1764,7 @@ pub async fn prepare_gateway(
         let mcp_manager = Arc::new(moltis_mcp::McpManager::new_with_env_overrides(
             merged,
             config_env_overrides.clone(),
+            std::time::Duration::from_secs(config.mcp.request_timeout_secs.max(1)),
         ));
         live_mcp = Arc::new(crate::mcp_service::LiveMcpService::new(
             Arc::clone(&mcp_manager),
@@ -3582,10 +3591,13 @@ pub async fn prepare_gateway(
         // Always attach the node exec provider so the LLM can target nodes
         // via the `node` parameter. When tools.exec.host = "node", also set
         // the default node so commands route there without an explicit param.
+        // The `node` parameter only appears in the tool schema when at least
+        // one node is connected (tracked via the shared `node_count` atomic).
         {
-            let provider = Arc::new(crate::node_exec::GatewayNodeExecProvider::new(Arc::clone(
-                &state,
-            )));
+            let provider = Arc::new(crate::node_exec::GatewayNodeExecProvider::new(
+                Arc::clone(&state),
+                Arc::clone(&state.node_count),
+            ));
             let default_node = if config.tools.exec.host == "node" {
                 config.tools.exec.node.clone()
             } else {
@@ -3647,6 +3659,11 @@ pub async fn prepare_gateway(
         tool_registry.register(Box::new(
             moltis_tools::send_image::SendImageTool::new()
                 .with_sandbox_router(Arc::clone(&sandbox_router)),
+        ));
+        tool_registry.register(Box::new(
+            moltis_tools::send_document::SendDocumentTool::new()
+                .with_sandbox_router(Arc::clone(&sandbox_router))
+                .with_session_store(Arc::clone(&session_store)),
         ));
         if let Some(t) = moltis_tools::web_search::WebSearchTool::from_config_with_env_overrides(
             &config.tools.web.search,
@@ -3950,7 +3967,7 @@ pub async fn prepare_gateway(
         }
 
         let shared_tool_registry = Arc::new(tokio::sync::RwLock::new(tool_registry));
-        browser_tool_for_warmup = shared_tool_registry.read().await.get_arc("browser");
+        browser_tool_for_warmup = shared_tool_registry.read().await.get("browser");
         let mut chat_service = LiveChatService::new(
             Arc::clone(&registry),
             Arc::clone(&model_store),

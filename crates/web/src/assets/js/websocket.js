@@ -18,6 +18,7 @@ import {
 	formatTokens,
 	localizeStructuredError,
 	renderAudioPlayer,
+	renderDocument,
 	renderMapLinks,
 	renderMapPointGroups,
 	renderMarkdown,
@@ -32,7 +33,7 @@ import { fetchModels } from "./models.js";
 import { prefetchChannels } from "./page-channels.js";
 import { maybeRefreshFullContext, renderCompactCard } from "./page-chat.js";
 import { fetchProjects } from "./projects.js";
-import { currentPage, currentPrefix, mount } from "./router.js";
+import { currentPage, currentPrefix, mount, navigate } from "./router.js";
 import {
 	appendLastMessageTimestamp,
 	bumpSessionCount,
@@ -285,6 +286,14 @@ function appendToolResult(toolCard, result, eventSession) {
 			: `data:image/png;base64,${result.screenshot}`;
 		renderScreenshot(toolCard, imgSrc, result.screenshot_scale || 1);
 	}
+	// Document card (send_document tool)
+	if (result.document_ref) {
+		var docStoredName = result.document_ref.split("/").pop();
+		var docDisplayName = result.filename || docStoredName;
+		var docSessionKey = eventSession || S.activeSessionKey || "main";
+		var docMediaSrc = `/api/sessions/${encodeURIComponent(docSessionKey)}/media/${encodeURIComponent(docStoredName)}`;
+		renderDocument(toolCard, docMediaSrc, docDisplayName, result.mime_type, result.size_bytes);
+	}
 	// Map link buttons (show_map tool)
 	var renderedPointGroups = renderMapPointGroups(toolCard, result.points, result.label);
 	if (!renderedPointGroups && result.map_links) {
@@ -323,6 +332,21 @@ function completeToolCard(toolCard, p, eventSession) {
 		errMsg.className = isToolValidationErrorPayload(p) ? "exec-retry-detail" : "exec-error-detail";
 		errMsg.textContent = p.error.detail;
 		toolCard.appendChild(errMsg);
+	}
+	// Show a hint below the card when a skill is created or updated.
+	if (p.success && (p.toolName === "create_skill" || p.toolName === "update_skill")) {
+		var hint = document.createElement("div");
+		hint.className = "skill-hint";
+		var verb = p.toolName === "create_skill" ? "created" : "updated";
+		var link = document.createElement("a");
+		link.href = "/skills";
+		link.textContent = "personal skills";
+		link.addEventListener("click", (e) => {
+			e.preventDefault();
+			navigate("/skills");
+		});
+		hint.append(`Skill ${verb} \u2014 available in your `, link);
+		toolCard.appendChild(hint);
 	}
 }
 
