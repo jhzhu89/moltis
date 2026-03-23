@@ -768,8 +768,8 @@ mod tests {
             ("authorization", "ApiKey raw-secret"),
         ]);
         let auth: SharedAuthProvider = Arc::new(FixedTokenProvider);
-        let transport = SseTransport::with_auth_remote(remote, auth, Duration::from_secs(60))
-            .unwrap();
+        let transport =
+            SseTransport::with_auth_remote(remote, auth, Duration::from_secs(60)).unwrap();
         let resp = transport.request("test", None).await.unwrap();
         assert!(resp.result.is_some());
         mock.assert_async().await;

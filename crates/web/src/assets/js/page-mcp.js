@@ -72,10 +72,7 @@ async function saveConfig() {
 		if (res?.ok) {
 			requestTimeoutSecs.value = String(res.payload?.request_timeout_secs || timeout.value);
 			configDirty.value = false;
-			showToast(
-				"Saved MCP settings. Restart affected MCP servers to apply the new timeout.",
-				"success",
-			);
+			showToast("Saved MCP settings. Restart affected MCP servers to apply the new timeout.", "success");
 		} else {
 			var msg = res?.error?.message || res?.error || "unknown error";
 			showToast(`Failed to save MCP settings: ${msg}`, "error");
