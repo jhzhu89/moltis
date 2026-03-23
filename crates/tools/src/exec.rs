@@ -357,41 +357,51 @@ impl AgentTool for ExecTool {
         // Node execution: forward to a remote node if configured.
         // When a node is explicitly requested via param or a default is set, route
         // to that node. Otherwise fall through to local/sandbox execution.
+        // Filter empty/whitespace-only strings — some models pass `""` when they
+        // don't know what value to use, which should be treated as "not specified".
         let node_ref = params
             .get("node")
             .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
             .map(String::from)
             .or_else(|| self.default_node.clone());
-        if let (Some(provider), Some(node_ref)) = (&self.node_provider, node_ref) {
-            let node_id = provider.resolve_node_id(&node_ref).await.ok_or_else(|| {
-                Error::message(format!("node '{node_ref}' not found or not connected"))
-            })?;
+        // Only attempt node routing when nodes are actually connected.  If no
+        // nodes are available the param is silently ignored and execution falls
+        // through to the local/sandbox path, avoiding confusing errors when the
+        // model hallucinates a node value.
+        if let (Some(provider), Some(node_ref)) = (&self.node_provider, &node_ref) {
+            if provider.has_connected_nodes() {
+                let node_id = provider.resolve_node_id(node_ref).await.ok_or_else(|| {
+                    Error::message(format!("node '{node_ref}' not found or not connected"))
+                })?;
 
-            let cwd = params.get("working_dir").and_then(|v| v.as_str());
+                let cwd = params.get("working_dir").and_then(|v| v.as_str());
 
-            info!(
-                command,
-                node_id = %node_id,
-                timeout_secs,
-                "exec forwarding to remote node"
-            );
+                info!(
+                    command,
+                    node_id = %node_id,
+                    timeout_secs,
+                    "exec forwarding to remote node"
+                );
 
-            let result = provider
-                .exec_on_node(&node_id, command, timeout_secs, cwd, None)
-                .await
-                .map_err(|e| Error::message(format!("node exec failed: {e}")))?;
+                let result = provider
+                    .exec_on_node(&node_id, command, timeout_secs, cwd, None)
+                    .await
+                    .map_err(|e| Error::message(format!("node exec failed: {e}")))?;
 
-            if let Some(ref cb) = self.completion_callback {
-                let preview_len = 200;
-                cb(ExecCompletionEvent {
-                    command: command.to_string(),
-                    exit_code: result.exit_code,
-                    stdout_preview: result.stdout.chars().take(preview_len).collect(),
-                    stderr_preview: result.stderr.chars().take(preview_len).collect(),
-                });
+                if let Some(ref cb) = self.completion_callback {
+                    let preview_len = 200;
+                    cb(ExecCompletionEvent {
+                        command: command.to_string(),
+                        exit_code: result.exit_code,
+                        stdout_preview: result.stdout.chars().take(preview_len).collect(),
+                        stderr_preview: result.stderr.chars().take(preview_len).collect(),
+                    });
+                }
+
+                return Ok(serde_json::to_value(&result)?);
             }
-
-            return Ok(serde_json::to_value(&result)?);
+            debug!(node_ref, "ignoring node parameter — no nodes are connected");
         }
 
         // Check sandbox state early — we need it for working_dir resolution.
@@ -1481,5 +1491,104 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result["exit_code"], 0);
+    }
+
+    /// Stub node provider that never has connected nodes.
+    struct DisconnectedNodeProvider;
+
+    #[async_trait]
+    impl NodeExecProvider for DisconnectedNodeProvider {
+        async fn exec_on_node(
+            &self,
+            _node_id: &str,
+            _command: &str,
+            _timeout_secs: u64,
+            _cwd: Option<&str>,
+            _env: Option<&HashMap<String, String>>,
+        ) -> anyhow::Result<ExecResult> {
+            unreachable!("should not route to a disconnected node");
+        }
+
+        async fn resolve_node_id(&self, _node_ref: &str) -> Option<String> {
+            unreachable!("should not attempt to resolve when no nodes connected");
+        }
+
+        fn has_connected_nodes(&self) -> bool {
+            false
+        }
+    }
+
+    #[tokio::test]
+    async fn test_exec_ignores_node_param_when_no_nodes_connected() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let tool = ExecTool {
+            working_dir: Some(temp_dir.path().to_path_buf()),
+            ..Default::default()
+        }
+        .with_node_provider(Arc::new(DisconnectedNodeProvider), None);
+
+        // Model passes a bogus node value — should fall through to local exec.
+        let result = tool
+            .execute(serde_json::json!({
+                "command": "echo fallthrough",
+                "node": "host"
+            }))
+            .await
+            .unwrap();
+        assert_eq!(result["stdout"].as_str().unwrap().trim(), "fallthrough");
+        assert_eq!(result["exit_code"], 0);
+    }
+
+    #[tokio::test]
+    async fn test_exec_ignores_empty_node_param() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let tool = ExecTool {
+            working_dir: Some(temp_dir.path().to_path_buf()),
+            ..Default::default()
+        }
+        .with_node_provider(Arc::new(DisconnectedNodeProvider), None);
+
+        // Model passes an empty string for node — should fall through to local exec.
+        let result = tool
+            .execute(serde_json::json!({
+                "command": "echo empty",
+                "node": ""
+            }))
+            .await
+            .unwrap();
+        assert_eq!(result["stdout"].as_str().unwrap().trim(), "empty");
+        assert_eq!(result["exit_code"], 0);
+    }
+
+    #[tokio::test]
+    async fn test_exec_ignores_whitespace_only_node_param() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let tool = ExecTool {
+            working_dir: Some(temp_dir.path().to_path_buf()),
+            ..Default::default()
+        }
+        .with_node_provider(Arc::new(DisconnectedNodeProvider), None);
+
+        let result = tool
+            .execute(serde_json::json!({
+                "command": "echo spaces",
+                "node": "   "
+            }))
+            .await
+            .unwrap();
+        assert_eq!(result["stdout"].as_str().unwrap().trim(), "spaces");
+        assert_eq!(result["exit_code"], 0);
+    }
+
+    #[tokio::test]
+    async fn test_exec_schema_hides_node_when_no_nodes_connected() {
+        let tool = ExecTool::default().with_node_provider(Arc::new(DisconnectedNodeProvider), None);
+
+        let schema = tool.parameters_schema();
+        let props = schema["properties"].as_object().unwrap();
+        assert!(
+            !props.contains_key("node"),
+            "node param should be hidden when no nodes are connected"
+        );
     }
 }
