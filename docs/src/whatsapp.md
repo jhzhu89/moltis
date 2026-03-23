@@ -361,7 +361,7 @@ Switch to the **Senders** tab to see everyone who has messaged the bot:
 ### "Can't Understand That Message Type"
 
 - This means the bot received a message type it doesn't handle (e.g. stickers, reactions, polls)
-- Check the server logs for a `warn` entry that lists which message fields were present
+- Check the server logs for an `info` entry that lists which message fields were present
 - Supported types: text, images, audio, voice notes, video, documents, and locations
 
 ### QR Code Not Appearing
