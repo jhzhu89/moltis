@@ -329,7 +329,7 @@ mod tests {
     async fn rejects_unsupported_extension() {
         let tool = SendDocumentTool::new();
         let err = tool
-            .execute(json!({ "path": "/tmp/data.xyz" }))
+            .execute(json!({ "path": "/tmp/data.qqqq" }))
             .await
             .unwrap_err();
         assert!(err.to_string().contains("unsupported file extension"));

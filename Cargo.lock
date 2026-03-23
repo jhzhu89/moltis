@@ -6232,6 +6232,7 @@ name = "moltis-media"
 version = "0.1.0"
 dependencies = [
  "image",
+ "mime_guess",
  "moltis-common",
  "moltis-metrics",
  "reqwest 0.12.28",

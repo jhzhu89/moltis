@@ -191,8 +191,9 @@ mod tests {
         assert_eq!(mime_from_extension("gif"), Some("image/gif"));
         assert_eq!(mime_from_extension("webp"), Some("image/webp"));
         assert_eq!(mime_from_extension("ppm"), Some("image/x-portable-pixmap"));
-        assert_eq!(mime_from_extension("bmp"), None);
-        assert_eq!(mime_from_extension("svg"), None);
+        assert_eq!(mime_from_extension("bmp"), Some("image/bmp"));
+        assert_eq!(mime_from_extension("svg"), Some("image/svg+xml"));
+        assert_eq!(mime_from_extension("qqqq"), None);
     }
 
     #[tokio::test]
@@ -206,7 +207,7 @@ mod tests {
     async fn rejects_unsupported_extension() {
         let tool = SendImageTool::new();
         let err = tool
-            .execute(json!({ "path": "/tmp/image.bmp" }))
+            .execute(json!({ "path": "/tmp/image.qqqq" }))
             .await
             .unwrap_err();
         assert!(err.to_string().contains("unsupported image format"));

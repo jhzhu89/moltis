@@ -38,37 +38,17 @@ pub fn extension_for_mime(mime: &str) -> &str {
 }
 
 /// Map a file extension (without leading dot) to its MIME type.
+///
+/// Delegates to `mime_guess` with manual overrides for extensions it
+/// doesn't cover (e.g. `text`, `log`, `ppm`).
 pub fn mime_from_extension(ext: &str) -> Option<&'static str> {
-    match ext.to_ascii_lowercase().as_str() {
-        // Images
-        "png" => Some("image/png"),
-        "jpg" | "jpeg" => Some("image/jpeg"),
-        "gif" => Some("image/gif"),
-        "webp" => Some("image/webp"),
-        "ppm" => Some("image/x-portable-pixmap"),
-        // Documents
-        "pdf" => Some("application/pdf"),
-        "txt" | "text" | "log" => Some("text/plain"),
-        "csv" => Some("text/csv"),
-        "json" => Some("application/json"),
-        "zip" => Some("application/zip"),
-        "gz" | "gzip" => Some("application/gzip"),
-        "docx" => Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
-        "xlsx" => Some("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
-        "pptx" => Some("application/vnd.openxmlformats-officedocument.presentationml.presentation"),
-        "xls" => Some("application/vnd.ms-excel"),
-        "doc" => Some("application/msword"),
-        "html" | "htm" => Some("text/html"),
-        "xml" => Some("application/xml"),
-        "rtf" => Some("application/rtf"),
-        "md" | "markdown" => Some("text/markdown"),
-        // Audio / Video
-        "ogg" | "oga" => Some("audio/ogg"),
-        "mp3" => Some("audio/mpeg"),
-        "mp4" => Some("video/mp4"),
-        "webm" => Some("audio/webm"),
-        _ => None,
+    let lower = ext.to_ascii_lowercase();
+    match lower.as_str() {
+        "text" | "log" => return Some("text/plain"),
+        "ppm" => return Some("image/x-portable-pixmap"),
+        _ => {}
     }
+    mime_guess::from_ext(&lower).first_raw()
 }
 
 #[allow(clippy::unwrap_used, clippy::expect_used)]
@@ -140,8 +120,16 @@ mod tests {
 
     #[test]
     fn mime_from_extension_unknown_returns_none() {
-        assert_eq!(mime_from_extension("bmp"), None);
-        assert_eq!(mime_from_extension("xyz"), None);
+        assert_eq!(mime_from_extension("zzz_nope"), None);
+        assert_eq!(mime_from_extension("qqqq"), None);
+    }
+
+    #[test]
+    fn mime_from_extension_extras_from_mime_guess() {
+        // mime_guess covers formats our old manual table didn't.
+        assert_eq!(mime_from_extension("bmp"), Some("image/bmp"));
+        assert_eq!(mime_from_extension("svg"), Some("image/svg+xml"));
+        assert_eq!(mime_from_extension("tar"), Some("application/x-tar"));
     }
 
     #[test]
