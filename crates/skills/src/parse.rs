@@ -30,13 +30,10 @@ fn resolve_name_or_slug(meta: &mut SkillMetadata, skill_dir: &Path) -> anyhow::R
     }
 
     // Try slug from frontmatter first.
-    let slug = meta
-        .slug
-        .clone()
-        .or_else(|| {
-            // Fall back to slug from _meta.json.
-            read_meta_json(skill_dir).and_then(|m| m.slug)
-        });
+    let slug = meta.slug.clone().or_else(|| {
+        // Fall back to slug from _meta.json.
+        read_meta_json(skill_dir).and_then(|m| m.slug)
+    });
 
     match slug {
         Some(ref s) if validate_name(s) => {
@@ -60,7 +57,9 @@ fn resolve_name_or_slug(meta: &mut SkillMetadata, skill_dir: &Path) -> anyhow::R
                 "skill name '{}' is invalid and slug '{}' (from {}) is also invalid: \
                  must be 1-64 lowercase alphanumeric, hyphen, or colon chars \
                  (e.g. 'my-skill' or 'ns:skill')",
-                meta.name, s, source
+                meta.name,
+                s,
+                source
             );
         },
         None => {
