@@ -1063,7 +1063,9 @@ pub struct PreparedGatewayCore {
     pub sandbox_router: Arc<moltis_tools::sandbox::SandboxRouter>,
     /// Browser service for lifecycle management.
     pub browser_for_lifecycle: Arc<dyn crate::services::BrowserService>,
-    /// Cron scheduler service.
+    /// Cron scheduler service. **Callers must invoke
+    /// [`CronService::start()`] to activate the scheduler**; without it,
+    /// scheduled jobs will not execute.
     pub cron_service: Arc<moltis_cron::service::CronService>,
     /// Log buffer for real-time log streaming.
     pub log_buffer: Option<crate::logs::LogBuffer>,

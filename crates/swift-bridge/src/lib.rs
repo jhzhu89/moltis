@@ -1763,8 +1763,15 @@ pub extern "C" fn moltis_start_httpd(request_json: *const c_char) -> *mut c_char
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
         let app = prepared.app;
+        // Keep the proxy shutdown sender alive for the server's full lifetime;
+        // dropping it closes the watch channel and terminates the proxy.
+        #[cfg(feature = "trusted-network")]
+        let _proxy_shutdown_tx = prepared._proxy_shutdown_tx;
 
         BRIDGE.runtime.spawn(async move {
+            // Hold the proxy sender inside the spawn so it lives as long as the server.
+            #[cfg(feature = "trusted-network")]
+            let _keep_proxy = _proxy_shutdown_tx;
             let server = axum::serve(
                 listener,
                 app.into_make_service_with_connect_info::<std::net::SocketAddr>(),

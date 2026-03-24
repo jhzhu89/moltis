@@ -459,7 +459,7 @@ pub struct PreparedGateway {
     /// Dropping this sender closes the watch channel, which is the proxy's
     /// shutdown signal.
     #[cfg(feature = "trusted-network")]
-    _proxy_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
+    pub _proxy_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
 }
 
 /// Internal metadata for the startup banner printed by [`start_gateway`].
@@ -1167,7 +1167,7 @@ pub async fn prepare_gateway(
                 tx
             });
 
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
             let mut cleanup_counter = 0u32;
             let mut sys = sysinfo::System::new();
             let pid = sysinfo::get_current_pid().ok();

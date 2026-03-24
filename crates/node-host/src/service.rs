@@ -423,8 +423,10 @@ pub fn generate_systemd_unit(moltis_bin: &Path, config: &ServiceConfig, log_path
     let log = log_path.display();
 
     let mut exec_args = format!(
-        "{bin} node run --host {} --token {} --timeout {}",
-        config.gateway_url, config.device_token, config.timeout,
+        "{bin} node run --host \"{}\" --token \"{}\" --timeout {}",
+        config.gateway_url.replace('"', "\\\""),
+        config.device_token.replace('"', "\\\""),
+        config.timeout,
     );
 
     if let Some(ref id) = config.node_id {
@@ -716,8 +718,8 @@ mod tests {
         assert!(unit.contains("[Install]"));
         assert!(unit.contains("network-online.target"));
         assert!(unit.contains("/usr/bin/moltis node run"));
-        assert!(unit.contains("ws://gw:9090/ws"));
-        assert!(unit.contains("tok_sys"));
+        assert!(unit.contains("--host \"ws://gw:9090/ws\""));
+        assert!(unit.contains("--token \"tok_sys\""));
         assert!(unit.contains("--node-id \"sys-node\""));
         assert!(unit.contains("--name \"Server\""));
         assert!(unit.contains("--working-dir \"/srv\""));
