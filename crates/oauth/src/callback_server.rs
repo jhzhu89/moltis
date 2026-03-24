@@ -54,7 +54,11 @@ impl CallbackServer {
             }),
         );
 
-        let listener = tokio::net::TcpListener::bind(format!("{bind_addr}:{port}")).await?;
+        let ip: std::net::IpAddr = bind_addr
+            .parse()
+            .map_err(|e| Error::message(format!("invalid bind address: {e}")))?;
+        let listener =
+            tokio::net::TcpListener::bind(std::net::SocketAddr::new(ip, port)).await?;
         let server = axum::serve(listener, app);
 
         tokio::select! {

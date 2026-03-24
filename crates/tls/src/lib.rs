@@ -306,7 +306,8 @@ pub async fn start_http_redirect_server(
         .fallback(redirect_to_https)
         .with_state(state);
 
-    let addr: SocketAddr = format!("{bind}:{http_port}").parse()?;
+    let ip: std::net::IpAddr = bind.parse().context("invalid bind address")?;
+    let addr = SocketAddr::new(ip, http_port);
     let listener = TcpListener::bind(addr).await?;
     let display_host = if localhost_mode {
         "localhost"

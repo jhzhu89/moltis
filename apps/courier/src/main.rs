@@ -115,9 +115,8 @@ async fn main() -> Result<()> {
         .route("/health", get(handle_health))
         .with_state(state);
 
-    let addr: SocketAddr = format!("{}:{}", args.bind, args.port)
-        .parse()
-        .context("invalid bind address")?;
+    let ip: std::net::IpAddr = args.bind.parse().context("invalid bind address")?;
+    let addr = SocketAddr::new(ip, args.port);
 
     tracing::info!(%addr, "courier listening");
 
