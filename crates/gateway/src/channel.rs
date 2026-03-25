@@ -26,6 +26,21 @@ fn unix_now() -> i64 {
         .as_secs() as i64
 }
 
+/// Shallow-merge two JSON values.  For each key in `incoming`, the value
+/// overwrites `base`.  Keys in `base` not present in `incoming` are preserved.
+/// If either operand is not an object, `incoming` wins outright.
+fn merge_json_objects(base: Value, incoming: Value) -> Value {
+    match (base, incoming) {
+        (Value::Object(mut base_map), Value::Object(incoming_map)) => {
+            for (key, value) in incoming_map {
+                base_map.insert(key, value);
+            }
+            Value::Object(base_map)
+        }
+        (_, incoming) => incoming,
+    }
+}
+
 /// Live channel service backed by the channel registry.
 ///
 /// All per-channel dispatch is handled by the registry — no match arms needed.
@@ -287,17 +302,30 @@ impl ChannelService for LiveChannelService {
         let channel_type = self
             .resolve_channel_type(&params, account_id, ChannelType::Telegram)
             .await?;
-        let config = params
+        let incoming_config = params
             .get("config")
             .cloned()
             .ok_or_else(|| "missing 'config'".to_string())?;
+
+        let ct = channel_type.as_str();
+
+        // Merge incoming config with stored config so that fields not sent
+        // by the caller (e.g. secret tokens) are preserved from the DB.
+        let stored = self
+            .store
+            .get(ct, account_id)
+            .await
+            .map_err(|e| e.to_string())?;
+        let (config, created_at) = match stored {
+            Some(s) => (merge_json_objects(s.config, incoming_config), s.created_at),
+            None => (incoming_config, unix_now()),
+        };
 
         info!(
             account_id,
             channel_type = channel_type.as_str(),
             "updating channel account"
         );
-        let ct = channel_type.as_str();
         let mut live_update_warning = None;
         match channel_type {
             ChannelType::Whatsapp => {
@@ -347,13 +375,6 @@ impl ChannelService for LiveChannelService {
             },
         }
 
-        let created_at = self
-            .store
-            .get(ct, account_id)
-            .await
-            .map_err(|e| e.to_string())?
-            .map(|s| s.created_at)
-            .unwrap_or_else(unix_now);
         let now = unix_now();
         if let Err(e) = self
             .store
@@ -687,5 +708,84 @@ impl ChannelService for LiveChannelService {
             "denied": identifier,
             "type": channel_type.to_string()
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn merge_preserves_missing_keys() {
+        let base = json!({"bot_token": "secret-123", "model": "old-model", "dm_policy": "open"});
+        let incoming = json!({"model": "new-model"});
+        let merged = merge_json_objects(base, incoming);
+        assert_eq!(merged["bot_token"], "secret-123");
+        assert_eq!(merged["model"], "new-model");
+        assert_eq!(merged["dm_policy"], "open");
+    }
+
+    #[test]
+    fn merge_incoming_keys_overwrite() {
+        let base = json!({"model": "old", "dm_policy": "open"});
+        let incoming = json!({"model": "new", "dm_policy": "allowlist"});
+        let merged = merge_json_objects(base, incoming);
+        assert_eq!(merged["model"], "new");
+        assert_eq!(merged["dm_policy"], "allowlist");
+    }
+
+    #[test]
+    fn merge_explicit_null_overwrites() {
+        let base = json!({"bot_token": "secret", "optional_field": "value"});
+        let incoming = json!({"optional_field": null});
+        let merged = merge_json_objects(base, incoming);
+        assert_eq!(merged["bot_token"], "secret");
+        assert!(merged["optional_field"].is_null());
+    }
+
+    #[test]
+    fn merge_empty_string_overwrites() {
+        let base = json!({"bot_token": "secret", "model": "gpt-4"});
+        let incoming = json!({"model": ""});
+        let merged = merge_json_objects(base, incoming);
+        assert_eq!(merged["bot_token"], "secret");
+        assert_eq!(merged["model"], "");
+    }
+
+    #[test]
+    fn merge_non_object_incoming_wins() {
+        let base = json!({"bot_token": "secret"});
+        let incoming = json!("just-a-string");
+        let merged = merge_json_objects(base, incoming);
+        assert_eq!(merged, json!("just-a-string"));
+    }
+
+    #[test]
+    fn merge_non_object_base_incoming_wins() {
+        let base = json!("old-string");
+        let incoming = json!({"model": "new"});
+        let merged = merge_json_objects(base, incoming);
+        assert_eq!(merged, json!({"model": "new"}));
+    }
+
+    #[test]
+    fn merge_adds_new_keys_from_incoming() {
+        let base = json!({"bot_token": "secret"});
+        let incoming = json!({"model": "gpt-4", "allowlist": ["user1"]});
+        let merged = merge_json_objects(base, incoming);
+        assert_eq!(merged["bot_token"], "secret");
+        assert_eq!(merged["model"], "gpt-4");
+        assert_eq!(merged["allowlist"], json!(["user1"]));
+    }
+
+    #[test]
+    fn merge_empty_incoming_preserves_all() {
+        let base = json!({"bot_token": "secret", "app_token": "app-secret", "model": "gpt-4"});
+        let incoming = json!({});
+        let merged = merge_json_objects(base, incoming);
+        assert_eq!(merged["bot_token"], "secret");
+        assert_eq!(merged["app_token"], "app-secret");
+        assert_eq!(merged["model"], "gpt-4");
     }
 }
