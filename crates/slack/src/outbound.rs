@@ -20,12 +20,61 @@ use moltis_common::types::ReplyPayload;
 
 use crate::{
     config::StreamMode,
-    markdown::{SLACK_MAX_MESSAGE_LEN, chunk_message, markdown_to_slack},
+    markdown::{SLACK_MAX_MESSAGE_LEN, SLACK_MAX_UPDATE_LEN, chunk_message, markdown_to_slack},
     state::AccountStateMap,
 };
 
 /// Minimum chars before the first message is sent during streaming.
 const STREAM_MIN_INITIAL_CHARS: usize = 30;
+
+/// Convert Telegram-style HTML logbook to Slack mrkdwn with `>` quote blocks.
+///
+/// - Strips `<blockquote expandable>` / `</blockquote>` tags
+/// - Converts `<b>text</b>` → `*text*` (Slack bold)
+/// - Strips remaining HTML tags, unescapes `&lt;`/`&gt;`/`&amp;`
+/// - Prefixes each non-empty line with `> `
+fn html_logbook_to_slack_mrkdwn(html: &str) -> String {
+    let mut text = html.to_string();
+
+    // Strip blockquote wrapper tags (with any attributes like "expandable").
+    text = text.replace("<blockquote expandable>", "");
+    text = text.replace("<blockquote>", "");
+    text = text.replace("</blockquote>", "");
+
+    // Convert <b>text</b> → *text* (Slack bold) before general tag stripping.
+    while let Some(start) = text.find("<b>") {
+        let Some(end) = text[start..].find("</b>") else {
+            break;
+        };
+        let inner = &text[start + 3..start + end];
+        text = format!("{}*{inner}*{}", &text[..start], &text[start + end + 4..]);
+    }
+
+    // Strip remaining HTML tags.
+    let mut result = String::with_capacity(text.len());
+    let mut in_tag = false;
+    for ch in text.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' if in_tag => in_tag = false,
+            _ if !in_tag => result.push(ch),
+            _ => {},
+        }
+    }
+
+    // Unescape HTML entities.
+    result = result.replace("&lt;", "<");
+    result = result.replace("&gt;", ">");
+    result = result.replace("&amp;", "&");
+
+    // Prefix each non-empty line with `> ` for Slack quote formatting.
+    result
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| format!("> {line}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
 
 /// Slack outbound message sender.
 pub struct SlackOutbound {
@@ -33,6 +82,23 @@ pub struct SlackOutbound {
 }
 
 impl SlackOutbound {
+    /// Post pre-formatted Slack mrkdwn (skips markdown-to-slack conversion).
+    async fn post_raw_slack(
+        &self,
+        account_id: &str,
+        to: &str,
+        slack_mrkdwn: &str,
+        reply_to: Option<&str>,
+    ) -> ChannelResult<()> {
+        let (client, token) = self.get_session(account_id)?;
+        let thread_ts = self.get_thread_ts(account_id, to, reply_to);
+        let chunks = chunk_message(slack_mrkdwn, SLACK_MAX_MESSAGE_LEN);
+        for chunk in chunks {
+            post_message(&client, &token, to, chunk, thread_ts.as_deref()).await?;
+        }
+        Ok(())
+    }
+
     /// Get a Slack client session for the given account.
     fn get_session(
         &self,
@@ -212,11 +278,11 @@ impl SlackOutbound {
                         Some(ts) => {
                             if last_edit.elapsed() >= throttle {
                                 let slack_text = markdown_to_slack(&accumulated);
-                                let display = if slack_text.len() > SLACK_MAX_MESSAGE_LEN - 3 {
+                                let display = if slack_text.len() > SLACK_MAX_UPDATE_LEN - 3 {
                                     format!(
                                         "{}...",
                                         &slack_text[..slack_text
-                                            .floor_char_boundary(SLACK_MAX_MESSAGE_LEN - 3)]
+                                            .floor_char_boundary(SLACK_MAX_UPDATE_LEN - 3)]
                                     )
                                 } else {
                                     format!("{slack_text}...")
@@ -227,7 +293,7 @@ impl SlackOutbound {
                                 {
                                     debug!(
                                         account_id,
-                                        to, "stream edit-in-place failed (will retry): {e}"
+                                        to, "stream edit-in-place failed: {e}"
                                     );
                                 }
                                 last_edit = tokio::time::Instant::now();
@@ -235,7 +301,14 @@ impl SlackOutbound {
                         },
                     }
                 },
-                Some(StreamEvent::Done) => break,
+                Some(StreamEvent::Done) => {
+                    while let Ok(evt) = stream.try_recv() {
+                        if let StreamEvent::Delta(tail) = evt {
+                            accumulated.push_str(&tail);
+                        }
+                    }
+                    break;
+                },
                 Some(StreamEvent::Error(e)) => {
                     accumulated.push_str(&format!("\n\n:warning: {e}"));
                     break;
@@ -248,23 +321,44 @@ impl SlackOutbound {
             return Ok(());
         }
 
+        // Wait out the throttle window so the final update doesn't collide
+        // with the last intermediate edit in Slack's rate limiter.
+        tokio::time::sleep(throttle.saturating_sub(last_edit.elapsed())).await;
+
         let final_text = markdown_to_slack(&accumulated);
-        let chunks = chunk_message(&final_text, SLACK_MAX_MESSAGE_LEN);
 
         match &sent_ts {
             Some(ts) => {
-                if let Some(first) = chunks.first()
-                    && let Err(e) = update_message(&client, &token, to, ts, first).await
-                {
-                    warn!(account_id, to, "failed to finalize stream message: {e}");
+                // chat.update has a stricter length limit than chat.postMessage.
+                // Split into: first chunk (for update) + overflow (as new posts).
+                let update_chunks = chunk_message(&final_text, SLACK_MAX_UPDATE_LEN);
+                let first = update_chunks.first().unwrap_or(&"");
+
+                let mut attempts = 0u32;
+                loop {
+                    match update_message(&client, &token, to, ts, first).await {
+                        Ok(()) => break,
+                        Err(e) if e.is_retryable() && attempts < 3 => {
+                            attempts += 1;
+                            let delay = Duration::from_millis(100 << attempts);
+                            debug!(account_id, to, attempt = attempts, "retrying final update");
+                            tokio::time::sleep(delay).await;
+                        }
+                        Err(e) => {
+                            warn!(account_id, to, "failed to finalize stream message: {e}");
+                            break;
+                        }
+                    }
                 }
-                for chunk in chunks.iter().skip(1) {
+
+                for chunk in update_chunks.iter().skip(1) {
                     if let Err(e) = post_message(&client, &token, to, chunk, thread_ts).await {
                         warn!(account_id, to, "failed to send overflow chunk: {e}");
                     }
                 }
             },
             None => {
+                let chunks = chunk_message(&final_text, SLACK_MAX_MESSAGE_LEN);
                 for chunk in &chunks {
                     if let Err(e) = post_message(&client, &token, to, chunk, thread_ts).await {
                         warn!(account_id, to, "failed to send stream message: {e}");
@@ -471,6 +565,33 @@ impl ChannelOutbound for SlackOutbound {
         .increment(1);
 
         Ok(())
+    }
+
+    async fn send_html(
+        &self,
+        account_id: &str,
+        to: &str,
+        html: &str,
+        reply_to: Option<&str>,
+    ) -> ChannelResult<()> {
+        let slack_text = html_logbook_to_slack_mrkdwn(html);
+        self.post_raw_slack(account_id, to, &slack_text, reply_to)
+            .await
+    }
+
+    async fn send_text_with_suffix(
+        &self,
+        account_id: &str,
+        to: &str,
+        text: &str,
+        suffix_html: &str,
+        reply_to: Option<&str>,
+    ) -> ChannelResult<()> {
+        let slack_body = markdown_to_slack(text);
+        let slack_suffix = html_logbook_to_slack_mrkdwn(suffix_html);
+        let combined = format!("{slack_body}\n\n{slack_suffix}");
+        self.post_raw_slack(account_id, to, &combined, reply_to)
+            .await
     }
 
     async fn send_media(
@@ -937,5 +1058,53 @@ mod tests {
         assert_eq!(extension_for_mime("image/jpeg"), "jpg");
         assert_eq!(extension_for_mime("application/pdf"), "pdf");
         assert_eq!(extension_for_mime("text/plain"), "bin");
+    }
+
+    #[test]
+    fn html_logbook_single_entry() {
+        let html = "<blockquote expandable>\n\
+            \u{1f4cb} <b>Activity log</b>\n\
+            \u{2022} \u{1f4bb} Running: `ls -la`\n\
+            </blockquote>";
+        let result = html_logbook_to_slack_mrkdwn(html);
+        assert_eq!(
+            result,
+            "> \u{1f4cb} *Activity log*\n\
+             > \u{2022} \u{1f4bb} Running: `ls -la`"
+        );
+    }
+
+    #[test]
+    fn html_logbook_multiple_entries() {
+        let html = "<blockquote expandable>\n\
+            \u{1f4cb} <b>Activity log</b>\n\
+            \u{2022} \u{1f4bb} Running: `tmux list-sessions`\n\
+            \u{2022} \u{274c} approval timed out for command: tmux list-sessions\n\
+            </blockquote>";
+        let result = html_logbook_to_slack_mrkdwn(html);
+        assert_eq!(
+            result,
+            "> \u{1f4cb} *Activity log*\n\
+             > \u{2022} \u{1f4bb} Running: `tmux list-sessions`\n\
+             > \u{2022} \u{274c} approval timed out for command: tmux list-sessions"
+        );
+    }
+
+    #[test]
+    fn html_logbook_unescapes_entities() {
+        let html = "<blockquote expandable>\n\
+            \u{1f4cb} <b>Activity log</b>\n\
+            \u{2022} Running: `echo &lt;hello&gt; &amp; world`\n\
+            </blockquote>";
+        let result = html_logbook_to_slack_mrkdwn(html);
+        assert!(result.contains("echo <hello> & world"), "got: {result}");
+    }
+
+    #[test]
+    fn html_logbook_non_logbook_fallback() {
+        let html = "<p>Some <b>bold</b> text with <i>italics</i></p>";
+        let result = html_logbook_to_slack_mrkdwn(html);
+        // Tags stripped, bold converted, all lines get `> ` quote prefix.
+        assert_eq!(result, "> Some *bold* text with italics");
     }
 }

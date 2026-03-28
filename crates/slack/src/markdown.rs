@@ -1,5 +1,8 @@
-/// Slack message character limit.
+/// Slack `chat.postMessage` character limit.
 pub const SLACK_MAX_MESSAGE_LEN: usize = 40_000;
+
+/// Slack `chat.update` character limit (stricter than postMessage).
+pub const SLACK_MAX_UPDATE_LEN: usize = 4_000;
 
 /// Convert standard Markdown to Slack mrkdwn format.
 ///
@@ -105,7 +108,8 @@ pub fn chunk_message(text: &str, max_len: usize) -> Vec<&str> {
         }
 
         // Find the best split point (last newline within limit).
-        let search_range = &remaining[..max_len];
+        let boundary = remaining.floor_char_boundary(max_len);
+        let search_range = &remaining[..boundary];
         let split_at = search_range
             .rfind('\n')
             .map(|pos| pos + 1) // Include the newline in the first chunk.
@@ -114,7 +118,7 @@ pub fn chunk_message(text: &str, max_len: usize) -> Vec<&str> {
                 search_range
                     .rfind(' ')
                     .map(|pos| pos + 1)
-                    .unwrap_or(remaining.floor_char_boundary(max_len))
+                    .unwrap_or(boundary)
             });
 
         let (chunk, rest) = remaining.split_at(split_at);
@@ -194,6 +198,17 @@ mod tests {
         assert!(chunks.len() >= 3);
         for chunk in &chunks {
             assert!(chunk.len() <= 40);
+        }
+    }
+
+    #[test]
+    fn chunk_multibyte_boundary() {
+        // 3-byte CJK characters: boundary must not split inside a character.
+        let text = "你".repeat(2000); // 6000 bytes, 2000 chars
+        let chunks = chunk_message(&text, 4000);
+        assert!(chunks.len() >= 2);
+        for chunk in &chunks {
+            assert!(chunk.len() <= 4000);
         }
     }
 
