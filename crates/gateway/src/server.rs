@@ -3244,6 +3244,9 @@ pub async fn prepare_gateway_core(
             .with_sandbox_router(Arc::clone(&sandbox_router))
             .with_env_provider(Arc::clone(&env_provider))
             .with_completion_callback(exec_cb);
+        if let Some(ref shell_cfg) = config.tools.exec.shell {
+            exec_tool = exec_tool.with_shell(moltis_tools::exec::parse_shell_config(shell_cfg));
+        }
 
         // Always attach the node exec provider so the LLM can target nodes
         // via the `node` parameter. When tools.exec.host = "node", also set

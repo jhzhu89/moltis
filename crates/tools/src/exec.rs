@@ -96,6 +96,9 @@ pub struct ExecOpts {
     pub max_output_bytes: usize,
     pub working_dir: Option<PathBuf>,
     pub env: Vec<(String, String)>,
+    /// Shell binary and flag for command execution (e.g. `("zsh", "-ic")`).
+    /// Defaults to `("sh", "-c")`.
+    pub shell: (String, String),
 }
 
 impl Default for ExecOpts {
@@ -105,6 +108,7 @@ impl Default for ExecOpts {
             max_output_bytes: 200 * 1024, // 200KB
             working_dir: None,
             env: Vec::new(),
+            shell: ("sh".into(), "-c".into()),
         }
     }
 }
@@ -117,6 +121,32 @@ fn truncate_output_for_display(output: &mut String, max_output_bytes: usize) {
     output.push_str("\n... [output truncated]");
 }
 
+/// Resolve the default shell from `$SHELL` with an appropriate flag.
+///
+/// - `zsh`  → `("zsh", "-ic")` (interactive, to load functions/aliases)
+/// - `bash` → `("bash", "-lc")` (login, to load profile)
+/// - anything else or unset → `("sh", "-c")`
+fn resolve_default_shell() -> (String, String) {
+    let shell_path = std::env::var("SHELL").unwrap_or_default();
+    let shell_name = std::path::Path::new(&shell_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+    match shell_name {
+        "zsh" => ("zsh".into(), "-ic".into()),
+        "bash" => ("bash".into(), "-lc".into()),
+        _ => ("sh".into(), "-c".into()),
+    }
+}
+
+/// Parse a shell config string like `"zsh -ic"` into `(binary, flag)`.
+pub fn parse_shell_config(s: &str) -> (String, String) {
+    let mut parts = s.split_whitespace();
+    let binary = parts.next().unwrap_or("sh").to_string();
+    let flag = parts.next().unwrap_or("-c").to_string();
+    (binary, flag)
+}
+
 /// Execute a shell command with timeout and output limits.
 #[tracing::instrument(skip(opts), fields(timeout_secs = opts.timeout.as_secs()))]
 pub async fn exec_command(command: &str, opts: &ExecOpts) -> Result<ExecResult> {
@@ -126,8 +156,8 @@ pub async fn exec_command(command: &str, opts: &ExecOpts) -> Result<ExecResult> 
         "exec_command"
     );
 
-    let mut cmd = Command::new("sh");
-    cmd.arg("-c").arg(command);
+    let mut cmd = Command::new(&opts.shell.0);
+    cmd.arg(&opts.shell.1).arg(command);
 
     if let Some(ref dir) = opts.working_dir {
         cmd.current_dir(dir);
@@ -208,6 +238,8 @@ pub struct ExecTool {
     node_provider: Option<Arc<dyn NodeExecProvider>>,
     /// Default node id or display name (from `tools.exec.node` config).
     default_node: Option<String>,
+    /// Shell binary and flag for local command execution.
+    shell: (String, String),
 }
 
 impl Default for ExecTool {
@@ -225,6 +257,7 @@ impl Default for ExecTool {
             completion_callback: None,
             node_provider: None,
             default_node: None,
+            shell: resolve_default_shell(),
         }
     }
 }
@@ -251,6 +284,12 @@ impl ExecTool {
     /// Attach a sandbox router for per-session dynamic sandbox resolution.
     pub fn with_sandbox_router(mut self, router: Arc<SandboxRouter>) -> Self {
         self.sandbox_router = Some(router);
+        self
+    }
+
+    /// Override the shell used for local command execution.
+    pub fn with_shell(mut self, shell: (String, String)) -> Self {
+        self.shell = shell;
         self
     }
 
@@ -571,6 +610,7 @@ impl AgentTool for ExecTool {
             max_output_bytes: self.max_output_bytes,
             working_dir,
             env: env.clone(),
+            shell: self.shell.clone(),
         };
 
         // Resolve sandbox: dynamic per-session router takes priority over static sandbox.

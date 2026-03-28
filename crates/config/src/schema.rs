@@ -1791,6 +1791,15 @@ pub struct ExecConfig {
     /// Default node id or display name for remote execution (when `host = "node"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node: Option<String>,
+    /// Shell used for local command execution.
+    ///
+    /// Format: `"<binary> <flag>"` where `<flag>` is the command-string argument
+    /// (e.g. `"zsh -ic"`, `"bash -lc"`, `"sh -c"`).
+    ///
+    /// Defaults to the user's `$SHELL` with an appropriate flag, falling back
+    /// to `"sh -c"` when `$SHELL` is unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell: Option<String>,
 }
 
 impl Default for ExecConfig {
@@ -1804,6 +1813,7 @@ impl Default for ExecConfig {
             sandbox: SandboxConfig::default(),
             host: "local".into(),
             node: None,
+            shell: None,
         }
     }
 }

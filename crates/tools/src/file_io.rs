@@ -84,6 +84,7 @@ pub async fn read_sandbox_file(
         max_output_bytes: MAX_SANDBOX_OUTPUT_BYTES,
         working_dir: Some(PathBuf::from("/home/sandbox")),
         env: Vec::new(),
+        ..Default::default()
     };
 
     let result = backend.exec(&sandbox_id, &command, &opts).await?;
