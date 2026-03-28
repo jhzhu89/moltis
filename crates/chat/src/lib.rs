@@ -6460,13 +6460,20 @@ async fn run_with_tools(
                         "seq": seq,
                     })
                 },
-                RunnerEvent::Iteration(n) => serde_json::json!({
-                    "runId": run_id,
-                    "sessionKey": sk,
-                    "state": "iteration",
-                    "iteration": n,
-                    "seq": seq,
-                }),
+                RunnerEvent::Iteration(n) => {
+                    if n > 1 {
+                        if let Some(ref dispatcher) = channel_stream_for_events {
+                            dispatcher.lock().await.send_delta("\n\n").await;
+                        }
+                    }
+                    serde_json::json!({
+                        "runId": run_id,
+                        "sessionKey": sk,
+                        "state": "iteration",
+                        "iteration": n,
+                        "seq": seq,
+                    })
+                },
                 RunnerEvent::SubAgentStart { task, model, depth } => serde_json::json!({
                     "runId": run_id,
                     "sessionKey": sk,
