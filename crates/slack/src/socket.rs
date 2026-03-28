@@ -270,8 +270,9 @@ async fn command_events_callback(
 
     let account_id = &listener_state.account_id;
     let command_text = event.command.to_string();
+    let command_name = command_text.strip_prefix('/').unwrap_or(&command_text);
     let text = event.text.unwrap_or_default();
-    let full_command = format!("{command_text} {text}").trim().to_string();
+    let full_command = format!("{command_name} {text}").trim().to_string();
 
     let event_sink = {
         let accts = listener_state
