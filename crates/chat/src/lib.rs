@@ -6030,6 +6030,7 @@ async fn run_with_tools(
         // Track reasoning text that should be persisted with the first tool call after thinking.
         let mut tool_reasoning_map: HashMap<String, String> = HashMap::new();
         let mut latest_reasoning = String::new();
+        let mut had_text_delta = false;
         while let Some(event) = event_rx.recv().await {
             let state = Arc::clone(&state_for_events);
             let run_id = run_id_for_events.clone();
@@ -6444,6 +6445,7 @@ async fn run_with_tools(
                     })
                 },
                 RunnerEvent::TextDelta(text) => {
+                    had_text_delta = true;
                     if let Some(ref map) = active_partial_for_events
                         && let Some(draft) = map.write().await.get_mut(&sk)
                     {
@@ -6461,11 +6463,12 @@ async fn run_with_tools(
                     })
                 },
                 RunnerEvent::Iteration(n) => {
-                    if n > 1 {
+                    if n > 1 && had_text_delta {
                         if let Some(ref dispatcher) = channel_stream_for_events {
                             dispatcher.lock().await.send_delta("\n\n").await;
                         }
                     }
+                    had_text_delta = false;
                     serde_json::json!({
                         "runId": run_id,
                         "sessionKey": sk,
